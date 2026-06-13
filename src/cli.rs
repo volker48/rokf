@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -35,6 +36,22 @@ pub fn run() -> ExitCode {
 }
 
 fn check(target: PathBuf) -> ExitCode {
+    if target.as_os_str() == "-" {
+        let mut contents = String::new();
+        if let Err(error) = std::io::stdin().read_to_string(&mut contents) {
+            eprintln!("<stdin>: error: {error}");
+            return ExitCode::from(2);
+        }
+
+        let report = verify_concept_document(std::path::Path::new("<stdin>"), &contents);
+        print!("{}", format_report(&report));
+        return if report.is_success() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(1)
+        };
+    }
+
     let report = if target.is_dir() {
         match verify_bundle_root(&target) {
             Ok(report) => report,

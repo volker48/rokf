@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Severity {
     Error,
+    Warning,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,6 +23,17 @@ pub struct VerificationReport {
 
 impl VerificationReport {
     pub fn is_success(&self) -> bool {
+        self.findings.is_empty()
+    }
+
+    pub fn is_conformant(&self) -> bool {
+        !self
+            .findings
+            .iter()
+            .any(|finding| finding.severity == Severity::Error)
+    }
+
+    pub fn is_healthy(&self) -> bool {
         self.findings.is_empty()
     }
 
@@ -121,17 +133,25 @@ pub fn verify_concept_document(path: &Path, contents: &str) -> VerificationRepor
     };
 
     let type_key = serde_yaml::Value::String("type".to_string());
-    let has_type = parsed_frontmatter
-        .get(&type_key)
-        .and_then(serde_yaml::Value::as_str)
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false);
+    let has_type = has_non_empty_string_field(&parsed_frontmatter, &type_key);
 
     if !has_type {
         findings.push(Finding {
             rule_code: "OKF002",
             severity: Severity::Error,
             message: "Concept Document Frontmatter must include a Concept Type".to_string(),
+            document: document.clone(),
+            line: Some(2),
+            column: Some(1),
+        });
+    }
+
+    let description_key = serde_yaml::Value::String("description".to_string());
+    if !has_non_empty_string_field(&parsed_frontmatter, &description_key) {
+        findings.push(Finding {
+            rule_code: "OKF101",
+            severity: Severity::Warning,
+            message: "Concept Document Frontmatter should include a Description".to_string(),
             document,
             line: Some(2),
             column: Some(1),
@@ -141,15 +161,30 @@ pub fn verify_concept_document(path: &Path, contents: &str) -> VerificationRepor
     VerificationReport { findings }
 }
 
+fn has_non_empty_string_field(frontmatter: &serde_yaml::Mapping, key: &serde_yaml::Value) -> bool {
+    frontmatter
+        .get(key)
+        .and_then(serde_yaml::Value::as_str)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
 pub fn format_report(report: &VerificationReport) -> String {
+    let mut output = format!(
+        "conformant: {}\nhealthy: {}\n",
+        yes_no(report.is_conformant()),
+        yes_no(report.is_healthy())
+    );
+
     if report.findings.is_empty() {
-        return "OK\n".to_string();
+        output.push_str("OK\n");
+        return output;
     }
 
-    let mut output = String::new();
     for finding in &report.findings {
         let severity = match finding.severity {
             Severity::Error => "error",
+            Severity::Warning => "warning",
         };
         let location = match (finding.line, finding.column) {
             (Some(line), Some(column)) => format!(":{line}:{column}"),
@@ -162,4 +197,8 @@ pub fn format_report(report: &VerificationReport) -> String {
         ));
     }
     output
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
 }

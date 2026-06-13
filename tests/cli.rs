@@ -126,7 +126,38 @@ fn check_reports_malformed_frontmatter_as_an_error_finding() {
 }
 
 #[test]
-fn check_accepts_a_conformant_concept_document() {
+fn check_accepts_a_healthy_concept_document() {
+    let document = temp_file(
+        "customers.md",
+        "---\ntype: BigQuery Table\ntitle: Customers\ndescription: Customer dimension.\n---\n\n# Customers\n",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .arg(&document)
+        .output()
+        .expect("run rokf check");
+
+    assert!(
+        output.status.success(),
+        "healthy Concept Document should pass; stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        stdout.contains("conformant: yes"),
+        "stdout should report conformance separately: {stdout}"
+    );
+    assert!(
+        stdout.contains("healthy: yes"),
+        "stdout should report health separately: {stdout}"
+    );
+}
+
+#[test]
+fn check_reports_missing_description_as_a_warning_without_breaking_conformance() {
     let document = temp_file(
         "customers.md",
         "---\ntype: BigQuery Table\ntitle: Customers\n---\n\n# Customers\n",
@@ -138,9 +169,47 @@ fn check_accepts_a_conformant_concept_document() {
         .output()
         .expect("run rokf check");
 
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        stdout.contains("OKF101"),
+        "stdout should include missing Description Rule Code: {stdout}"
+    );
+    assert!(
+        stdout.contains("warning"),
+        "stdout should report missing recommended fields as warnings: {stdout}"
+    );
+    assert!(
+        stdout.contains("conformant: yes"),
+        "Quality Rule Findings should not break conformance: {stdout}"
+    );
+    assert!(
+        stdout.contains("healthy: no"),
+        "Quality Rule Findings should affect health: {stdout}"
+    );
+}
+
+#[test]
+fn check_accepts_a_single_concept_document_from_stdin() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn rokf check -");
+
+    std::io::Write::write_all(
+        child.stdin.as_mut().expect("stdin is piped"),
+        b"---\ntype: BigQuery Table\ndescription: Customer dimension.\n---\n\n# Customers\n",
+    )
+    .expect("write stdin document");
+
+    let output = child.wait_with_output().expect("wait for rokf check -");
+
     assert!(
         output.status.success(),
-        "conformant Concept Document should pass; stdout: {}; stderr: {}",
+        "stdin Concept Document should pass; stdout: {}; stderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -153,7 +222,7 @@ fn check_traverses_nested_concept_documents_in_a_bundle_root() {
     fs::create_dir_all(&squad).expect("create nested bundle hierarchy");
     fs::write(
         bundle.join("captain-rex.md"),
-        "---\ntype: Person\n---\n\n# Captain Rex\n",
+        "---\ntype: Person\ndescription: Clone captain.\n---\n\n# Captain Rex\n",
     )
     .expect("write conformant concept document");
     fs::write(squad.join("torrent-company.md"), "# Torrent Company\n")
@@ -188,7 +257,7 @@ fn check_classifies_reserved_files_separately_from_concept_documents_in_a_bundle
     fs::write(bundle.join("log.md"), "# Log\n").expect("write Log File");
     fs::write(
         bundle.join("phase-ii-armor.md"),
-        "---\ntype: Equipment\n---\n\n# Phase II Armor\n",
+        "---\ntype: Equipment\ndescription: Clone trooper armor.\n---\n\n# Phase II Armor\n",
     )
     .expect("write conformant concept document");
 
