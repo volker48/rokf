@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '\nRunning pre-commit quality gates...\n\n'
+
+printf '==> cargo fmt --check\n'
+cargo fmt --check
+
+printf '\n==> cargo clippy --all-targets --all-features -- -D warnings\n'
+cargo clippy --all-targets --all-features -- -D warnings
+
+printf '\n==> cargo test --all-targets --all-features\n'
+cargo test --all-targets --all-features
+
+printf '\nPre-commit quality gates passed.\n'
