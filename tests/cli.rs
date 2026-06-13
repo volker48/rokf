@@ -4,13 +4,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn temp_file(name: &str, contents: &str) -> std::path::PathBuf {
+fn temp_dir() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "rokf-test-{}-{}",
         std::process::id(),
         TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir_all(&dir).expect("create temp test directory");
+    dir
+}
+
+fn temp_file(name: &str, contents: &str) -> std::path::PathBuf {
+    let dir = temp_dir();
     let path = dir.join(name);
     fs::write(&path, contents).expect("write temp test document");
     path
@@ -136,6 +141,66 @@ fn check_accepts_a_conformant_concept_document() {
     assert!(
         output.status.success(),
         "conformant Concept Document should pass; stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn check_traverses_nested_concept_documents_in_a_bundle_root() {
+    let bundle = temp_dir();
+    let squad = bundle.join("squads");
+    fs::create_dir_all(&squad).expect("create nested bundle hierarchy");
+    fs::write(
+        bundle.join("captain-rex.md"),
+        "---\ntype: Person\n---\n\n# Captain Rex\n",
+    )
+    .expect("write conformant concept document");
+    fs::write(squad.join("torrent-company.md"), "# Torrent Company\n")
+        .expect("write non-conformant nested concept document");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .arg(&bundle)
+        .output()
+        .expect("run rokf check bundle");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        stdout.contains("OKF001"),
+        "stdout should include nested Concept Document Finding: {stdout}"
+    );
+    assert!(
+        stdout.contains(&squad.join("torrent-company.md").display().to_string()),
+        "stdout should include nested OKF Document identity: {stdout}"
+    );
+    assert!(
+        !stdout.contains("captain-rex.md"),
+        "stdout should not report conformant Concept Documents: {stdout}"
+    );
+}
+
+#[test]
+fn check_classifies_reserved_files_separately_from_concept_documents_in_a_bundle_root() {
+    let bundle = temp_dir();
+    fs::write(bundle.join("index.md"), "# Clone Intelligence\n").expect("write Root Index File");
+    fs::write(bundle.join("log.md"), "# Log\n").expect("write Log File");
+    fs::write(
+        bundle.join("phase-ii-armor.md"),
+        "---\ntype: Equipment\n---\n\n# Phase II Armor\n",
+    )
+    .expect("write conformant concept document");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .arg(&bundle)
+        .output()
+        .expect("run rokf check bundle");
+
+    assert!(
+        output.status.success(),
+        "Reserved Files should not be checked as Concept Documents; stdout: {}; stderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );

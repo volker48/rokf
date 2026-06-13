@@ -19,13 +19,14 @@ cargo build --release
 
 ## Usage
 
-### Verify a concept document
+### Verify a concept document or bundle
 
 ```sh
 rokf check path/to/concept.md
+rokf check path/to/bundle-root
 ```
 
-`rokf check` reads a single concept document and reports findings against the OKF specification:
+`rokf check` reads a single Concept Document or traverses an explicit Bundle Root and reports findings against the OKF specification:
 
 - **OKF001** — Frontmatter must be present and parseable YAML.
 - **OKF002** — Frontmatter must include a non-empty `type` field.

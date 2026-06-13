@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Severity {
@@ -24,6 +24,55 @@ impl VerificationReport {
     pub fn is_success(&self) -> bool {
         self.findings.is_empty()
     }
+
+    fn extend(&mut self, other: VerificationReport) {
+        self.findings.extend(other.findings);
+    }
+}
+
+pub fn verify_bundle_root(bundle_root: &Path) -> std::io::Result<VerificationReport> {
+    let mut documents = Vec::new();
+    collect_okf_documents(bundle_root, &mut documents)?;
+    documents.sort();
+
+    let mut report = VerificationReport {
+        findings: Vec::new(),
+    };
+
+    for document in documents {
+        if is_reserved_file(&document) {
+            continue;
+        }
+
+        let contents = std::fs::read_to_string(&document)?;
+        report.extend(verify_concept_document(&document, &contents));
+    }
+
+    Ok(report)
+}
+
+fn collect_okf_documents(directory: &Path, documents: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    let mut entries = std::fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            collect_okf_documents(&path, documents)?;
+        } else if file_type.is_file() && path.extension().is_some_and(|extension| extension == "md")
+        {
+            documents.push(path);
+        }
+    }
+
+    Ok(())
+}
+
+fn is_reserved_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|file_name| file_name.to_str())
+        .is_some_and(|file_name| matches!(file_name, "index.md" | "log.md"))
 }
 
 pub fn verify_concept_document(path: &Path, contents: &str) -> VerificationReport {
