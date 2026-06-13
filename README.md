@@ -57,25 +57,27 @@ Read the full specification: [`SPEC.md`](./SPEC.md)
 
 ### Quick dev loop
 
-After every code change, check a demo file with fuzzy matching:
+After every code change, check a demo Bundle Root or Concept Document with fuzzy matching:
 
 ```sh
+just check demos         # checks the demo hierarchy
+just check star-wars     # matches the Star Wars demo bundle
 just check rex           # matches captain-rex.md
 just check phase         # matches phase-ii-armor.md
 just check 501           # matches 501st-legion.md
 ```
 
-Run against all demo files to sanity-check before pushing:
+Run against all top-level demo bundles to sanity-check before pushing:
 
 ```sh
 just check-all
 ```
 
-Watch mode — re-checks a demo file automatically every time you save a source file:
+Watch mode — re-checks a demo Bundle Root or Concept Document automatically every time you save a source file:
 
 ```sh
 cargo install cargo-watch   # first time only
-just watch rex
+just watch demos
 ```
 
 ### Quality checks
