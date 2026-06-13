@@ -1,3 +1,3 @@
-fn main() {
+fn main(){
     rokf::cli::run();
 }
