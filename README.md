@@ -52,6 +52,30 @@ Read the full specification: [`SPEC.md`](./SPEC.md)
 ### Prerequisites
 
 - Rust stable (install via [rustup](https://rustup.rs/))
+- [just](https://github.com/casey/just) — command runner (`brew install just` on macOS)
+
+### Quick dev loop
+
+After every code change, check a demo file with fuzzy matching:
+
+```sh
+just check rex           # matches captain-rex.md
+just check phase         # matches phase-ii-armor.md
+just check 501           # matches 501st-legion.md
+```
+
+Run against all demo files to sanity-check before pushing:
+
+```sh
+just check-all
+```
+
+Watch mode — re-checks a demo file automatically every time you save a source file:
+
+```sh
+cargo install cargo-watch   # first time only
+just watch rex
+```
 
 ### Quality checks
 
