@@ -1,3 +1,3 @@
-fn main() {
-    rokf::cli::run();
+fn main() -> std::process::ExitCode {
+    rokf::cli::run()
 }
