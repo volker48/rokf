@@ -57,6 +57,20 @@ impl VerificationReport {
     }
 }
 
+pub fn discover_bundle_root() -> Option<PathBuf> {
+    let mut current = std::env::current_dir().ok()?;
+
+    loop {
+        if current.join("index.md").is_file() {
+            return Some(current);
+        }
+        match current.parent() {
+            Some(parent) => current = parent.to_path_buf(),
+            None => return None,
+        }
+    }
+}
+
 pub fn verify_bundle_root(bundle_root: &Path) -> std::io::Result<VerificationReport> {
     let mut documents = Vec::new();
     collect_okf_documents(bundle_root, &mut documents)?;

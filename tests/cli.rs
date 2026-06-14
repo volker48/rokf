@@ -368,6 +368,151 @@ fn check_classifies_reserved_files_separately_from_concept_documents_in_a_bundle
 }
 
 #[test]
+fn check_explicit_bundle_root_bypasses_bundle_discovery() {
+    let outside_dir = temp_dir();
+    let bundle = temp_dir();
+    fs::write(
+        outside_dir.join("orphan-concept.md"),
+        "---\ntype: Equipment\ndescription: Outside bundle.\n---\n",
+    )
+    .expect("write concept document outside bundle");
+    fs::write(bundle.join("index.md"), "# Bundle Index\n").expect("write Root Index File");
+    fs::write(
+        bundle.join("log.md"),
+        "---\ntype: Log\ndescription: A log file.\n---\n",
+    )
+    .expect("write Log File");
+    fs::write(bundle.join("kix.md"), "# Kix\n").expect("write non-conformant concept document");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .arg(&bundle)
+        .current_dir(&outside_dir)
+        .output()
+        .expect("run rokf check with explicit bundle root from outside directory");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        stdout.contains("OKF001"),
+        "explicit Bundle Root should still verify the bundle: {stdout}"
+    );
+    assert!(
+        stdout.contains(&bundle.join("kix.md").display().to_string()),
+        "stdout should include explicit Bundle Root content: {stdout}"
+    );
+}
+
+#[test]
+fn check_stdin_bypasses_bundle_discovery_when_no_bundle_root_is_supplied() {
+    let dir = temp_dir();
+    fs::write(
+        dir.join("orphan-concept.md"),
+        "---\ntype: Equipment\ndescription: No bundle marker.\n---\n",
+    )
+    .expect("write concept document without a bundle marker");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .arg("-")
+        .current_dir(&dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn rokf check - without a discoverable bundle root");
+
+    std::io::Write::write_all(
+        child.stdin.as_mut().expect("stdin is piped"),
+        b"---\ntype: Person\ndescription: Clone captain.\n---\n\n# Captain Rex\n",
+    )
+    .expect("write stdin document");
+
+    let output = child.wait_with_output().expect("wait for rokf check -");
+
+    assert!(
+        output.status.success(),
+        "stdin input should bypass Bundle Discovery and pass; stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn check_reports_failed_bundle_discovery_with_a_clear_error_and_deterministic_exit_code() {
+    let dir = temp_dir();
+    fs::write(
+        dir.join("orphan-concept.md"),
+        "---\ntype: Equipment\ndescription: No bundle marker.\n---\n",
+    )
+    .expect("write concept document without a bundle marker");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .current_dir(&dir)
+        .output()
+        .expect("run rokf check without a discoverable bundle root");
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).expect("stderr is utf-8");
+    assert!(
+        stderr.contains("could not discover"),
+        "stderr should report failed discovery clearly: {stderr}"
+    );
+}
+
+#[test]
+fn check_discovers_the_nearest_bundle_root_from_a_nested_directory() {
+    let bundle = temp_dir();
+    fs::write(bundle.join("index.md"), "# Bundle Index\n").expect("write Root Index File");
+    let nested = bundle.join("squads");
+    fs::create_dir_all(&nested).expect("create nested directory");
+    fs::write(nested.join("torrent-company.md"), "# Torrent Company\n")
+        .expect("write non-conformant nested concept document");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .current_dir(&nested)
+        .output()
+        .expect("run rokf check from nested directory");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        stdout.contains("OKF001"),
+        "Bundle Discovery should traverse up from the nested directory: {stdout}"
+    );
+    assert!(
+        stdout.contains(&nested.join("torrent-company.md").display().to_string()),
+        "stdout should include nested OKF Document identity: {stdout}"
+    );
+}
+
+#[test]
+fn check_discovers_a_bundle_root_from_the_current_directory() {
+    let bundle = temp_dir();
+    fs::write(bundle.join("index.md"), "# Bundle Index\n").expect("write Root Index File");
+    fs::write(bundle.join("captain-rex.md"), "# Captain Rex\n")
+        .expect("write non-conformant concept document");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .current_dir(&bundle)
+        .output()
+        .expect("run rokf check from bundle root");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        stdout.contains("OKF001"),
+        "Bundle Discovery should find the Bundle Root and verify it: {stdout}"
+    );
+    assert!(
+        stdout.contains(&bundle.join("captain-rex.md").display().to_string()),
+        "stdout should include discovered Bundle Root content: {stdout}"
+    );
+}
+
+#[test]
 fn version_reports_cargo_package_version() {
     let output = Command::new(env!("CARGO_BIN_EXE_rokf"))
         .arg("--version")

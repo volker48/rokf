@@ -5,7 +5,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::verification::{
-    Severity, format_report_with_threshold, verify_bundle_root, verify_concept_document,
+    Severity, discover_bundle_root, format_report_with_threshold, verify_bundle_root,
+    verify_concept_document,
 };
 
 #[derive(Debug, Parser)]
@@ -27,8 +28,9 @@ enum Command {
         #[arg(long, value_enum, default_value_t = FailureThreshold::Warning)]
         failure_threshold: FailureThreshold,
 
-        /// Concept Document or explicit Bundle Root to verify
-        target: PathBuf,
+        /// Concept Document, explicit Bundle Root, or `-` for stdin.
+        /// When omitted, rokf attempts Bundle Discovery from the current directory.
+        target: Option<PathBuf>,
     },
 }
 
@@ -61,7 +63,20 @@ pub fn run() -> ExitCode {
     }
 }
 
-fn check(target: PathBuf, failure_threshold: Severity) -> ExitCode {
+fn check(target: Option<PathBuf>, failure_threshold: Severity) -> ExitCode {
+    let target = match target {
+        Some(target) => target,
+        None => match discover_bundle_root() {
+            Some(root) => root,
+            None => {
+                eprintln!(
+                    "rokf check: error: could not discover a Bundle Root from the current directory"
+                );
+                return ExitCode::from(2);
+            }
+        },
+    };
+
     if target.as_os_str() == "-" {
         let mut contents = String::new();
         if let Err(error) = std::io::stdin().read_to_string(&mut contents) {

@@ -24,6 +24,7 @@ cargo build --release
 ```sh
 rokf check path/to/concept.md
 rokf check path/to/bundle-root
+rokf check                       # discover Bundle Root from current directory
 ```
 
 `rokf check` reads a single Concept Document or traverses an explicit Bundle Root and reports findings against the OKF specification:
