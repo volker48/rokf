@@ -962,6 +962,35 @@ fn configuration_applies_rule_set_suppressions_exclusions_and_threshold() {
 }
 
 #[test]
+fn conformance_rule_set_reports_conformance_rules_only() {
+    let bundle = temp_dir();
+    fs::write(bundle.join("index.md"), "# Bundle Index\n").expect("write Root Index File");
+    fs::write(
+        bundle.join("rokf.yml"),
+        "failure_threshold: error\nrule_set: conformance\n",
+    )
+    .expect("write configuration");
+    fs::write(bundle.join("concept.md"), "---\ntitle: Untyped\n---\n").expect("write concept");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .arg(&bundle)
+        .output()
+        .expect("run conformance-only rokf check");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        stdout.contains("OKF002"),
+        "conformance Rule Set should keep Conformance Rule Findings: {stdout}"
+    );
+    assert!(
+        !stdout.contains("OKF101"),
+        "conformance Rule Set should filter Quality Rule Findings: {stdout}"
+    );
+}
+
+#[test]
 fn explicit_configuration_reports_parse_errors() {
     let bundle = temp_dir();
     let config = bundle.join("rokf.yml");

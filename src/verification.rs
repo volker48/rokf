@@ -2,6 +2,10 @@ use std::path::Path;
 
 use crate::traversal::{self, BundleTraversal, OkfDocument, OkfDocumentKind};
 
+mod rules;
+
+use rules::Rule;
+
 pub const KNOWN_OKF_VERSION: &str = "0.1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -13,12 +17,11 @@ pub enum Severity {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding {
-    pub rule_code: &'static str,
-    pub severity: Severity,
-    pub message: String,
-    pub document: String,
-    pub line: Option<usize>,
-    pub column: Option<usize>,
+    rule: Rule,
+    message: String,
+    document: String,
+    line: Option<usize>,
+    column: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,14 +61,11 @@ impl VerificationReport {
         !self
             .findings
             .iter()
-            .any(|finding| finding.severity >= failure_threshold)
+            .any(|finding| finding.severity() >= failure_threshold)
     }
 
     pub fn is_conformant(&self) -> bool {
-        !self
-            .findings
-            .iter()
-            .any(|finding| finding.severity == Severity::Error)
+        !self.findings.iter().any(Finding::is_conformance_rule)
     }
 
     pub fn is_healthy(&self) -> bool {
@@ -75,12 +75,30 @@ impl VerificationReport {
     pub fn is_healthy_at(&self, failure_threshold: Severity) -> bool {
         self.is_conformant()
             && !self.findings.iter().any(|finding| {
-                finding.severity != Severity::Error && finding.severity >= failure_threshold
+                !finding.is_conformance_rule() && finding.severity() >= failure_threshold
             })
     }
 
     pub fn extend(&mut self, other: VerificationReport) {
         self.findings.extend(other.findings);
+    }
+}
+
+impl Finding {
+    fn rule_code(&self) -> &'static str {
+        self.rule.code()
+    }
+
+    fn severity(&self) -> Severity {
+        self.rule.severity()
+    }
+
+    fn is_conformance_rule(&self) -> bool {
+        self.rule.is_conformance_rule()
+    }
+
+    fn is_suppressed_by(&self, suppressions: &[String]) -> bool {
+        suppressions.iter().any(|rule| rule == self.rule_code())
     }
 }
 
@@ -128,26 +146,22 @@ pub fn verify_concept_document(path: &Path, contents: &str) -> VerificationRepor
     let mut findings = Vec::new();
 
     if !contents.starts_with("---\n") && contents.trim() != "---" {
-        findings.push(Finding {
-            rule_code: "OKF001",
-            severity: Severity::Error,
-            message: "Concept Document must start with Frontmatter delimited by ---".to_string(),
+        findings.push(Rule::ConceptFrontmatter.finding(
             document,
-            line: Some(1),
-            column: Some(1),
-        });
+            "Concept Document must start with Frontmatter delimited by ---",
+            Some(1),
+            Some(1),
+        ));
         return VerificationReport { findings };
     }
 
     let Some(frontmatter_end) = contents[4..].find("\n---") else {
-        findings.push(Finding {
-            rule_code: "OKF001",
-            severity: Severity::Error,
-            message: "Concept Document Frontmatter must have a closing --- delimiter".to_string(),
+        findings.push(Rule::ConceptFrontmatter.finding(
             document,
-            line: Some(1),
-            column: Some(1),
-        });
+            "Concept Document Frontmatter must have a closing --- delimiter",
+            Some(1),
+            Some(1),
+        ));
         return VerificationReport { findings };
     };
 
@@ -156,14 +170,12 @@ pub fn verify_concept_document(path: &Path, contents: &str) -> VerificationRepor
         Ok(frontmatter) => frontmatter,
         Err(error) => {
             let location = error.location();
-            findings.push(Finding {
-                rule_code: "OKF001",
-                severity: Severity::Error,
-                message: format!("Concept Document Frontmatter must be parseable YAML: {error}"),
+            findings.push(Rule::ConceptFrontmatter.finding(
                 document,
-                line: location.as_ref().map(|location| location.line()),
-                column: location.as_ref().map(|location| location.column()),
-            });
+                format!("Concept Document Frontmatter must be parseable YAML: {error}"),
+                location.as_ref().map(|location| location.line()),
+                location.as_ref().map(|location| location.column()),
+            ));
             return VerificationReport { findings };
         }
     };
@@ -172,37 +184,31 @@ pub fn verify_concept_document(path: &Path, contents: &str) -> VerificationRepor
     let has_type = has_non_empty_string_field(&parsed_frontmatter, &type_key);
 
     if !has_type {
-        findings.push(Finding {
-            rule_code: "OKF002",
-            severity: Severity::Error,
-            message: "Concept Document Frontmatter must include a Concept Type".to_string(),
-            document: document.clone(),
-            line: Some(2),
-            column: Some(1),
-        });
+        findings.push(Rule::ConceptType.finding(
+            document.clone(),
+            "Concept Document Frontmatter must include a Concept Type",
+            Some(2),
+            Some(1),
+        ));
     }
 
     let description_key = serde_yaml::Value::String("description".to_string());
     if !has_non_empty_string_field(&parsed_frontmatter, &description_key) {
-        findings.push(Finding {
-            rule_code: "OKF101",
-            severity: Severity::Warning,
-            message: "Concept Document Frontmatter should include a Description".to_string(),
-            document: document.clone(),
-            line: Some(2),
-            column: Some(1),
-        });
+        findings.push(Rule::ConceptDescription.finding(
+            document.clone(),
+            "Concept Document Frontmatter should include a Description",
+            Some(2),
+            Some(1),
+        ));
     }
 
     if tags_are_unsorted(&parsed_frontmatter) {
-        findings.push(Finding {
-            rule_code: "OKF102",
-            severity: Severity::Suggestion,
-            message: "Concept Document Tags should be sorted".to_string(),
+        findings.push(Rule::ConceptTagsSorted.finding(
             document,
-            line: Some(2),
-            column: Some(1),
-        });
+            "Concept Document Tags should be sorted",
+            Some(2),
+            Some(1),
+        ));
     }
 
     VerificationReport { findings }
@@ -237,56 +243,45 @@ pub fn verify_index_file(path: &Path, contents: &str, is_root: bool) -> Verifica
 
     if let Some((frontmatter, body_start)) = split_frontmatter(contents) {
         if !is_root {
-            findings.push(Finding {
-                rule_code: "OKF200",
-                severity: Severity::Error,
-                message: "Index File must not contain frontmatter".to_string(),
-                document: document.clone(),
-                line: Some(1),
-                column: Some(1),
-            });
+            findings.push(Rule::IndexNoFrontmatter.finding(
+                document.clone(),
+                "Index File must not contain frontmatter",
+                Some(1),
+                Some(1),
+            ));
         } else {
             match serde_yaml::from_str::<serde_yaml::Mapping>(frontmatter) {
                 Err(error) => {
                     let location = error.location();
-                    findings.push(Finding {
-                        rule_code: "OKF202",
-                        severity: Severity::Error,
-                        message: format!(
-                            "Root Index File frontmatter must be parseable YAML: {error}"
-                        ),
-                        document: document.clone(),
-                        line: location.as_ref().map(|location| location.line()),
-                        column: location.as_ref().map(|location| location.column()),
-                    });
+                    findings.push(Rule::RootIndexFrontmatter.finding(
+                        document.clone(),
+                        format!("Root Index File frontmatter must be parseable YAML: {error}"),
+                        location.as_ref().map(|location| location.line()),
+                        location.as_ref().map(|location| location.column()),
+                    ));
                 }
                 Ok(mapping) => {
                     let version_key = serde_yaml::Value::String("okf_version".to_string());
                     if let Some(value) = mapping.get(&version_key) {
                         if let Some(version) = value.as_str() {
                             if version != KNOWN_OKF_VERSION {
-                                findings.push(Finding {
-                                    rule_code: "OKF203",
-                                    severity: Severity::Warning,
-                                    message: format!(
+                                findings.push(Rule::RootIndexVersion.finding(
+                                    document.clone(),
+                                    format!(
                                         "Root Index File declares unknown OKF version {version}; \
                                          best-effort verification will be used"
                                     ),
-                                    document: document.clone(),
-                                    line: Some(2),
-                                    column: Some(1),
-                                });
+                                    Some(2),
+                                    Some(1),
+                                ));
                             }
                         } else {
-                            findings.push(Finding {
-                                rule_code: "OKF203",
-                                severity: Severity::Warning,
-                                message: "Root Index File okf_version should be a string"
-                                    .to_string(),
-                                document: document.clone(),
-                                line: Some(2),
-                                column: Some(1),
-                            });
+                            findings.push(Rule::RootIndexVersion.finding(
+                                document.clone(),
+                                "Root Index File okf_version should be a string",
+                                Some(2),
+                                Some(1),
+                            ));
                         }
                     }
                 }
@@ -313,14 +308,12 @@ fn check_index_entry_line(
 ) {
     let trimmed = line.trim_start();
     if (trimmed.starts_with("- ") || trimmed.starts_with("* ")) && !trimmed.contains("](") {
-        findings.push(Finding {
-            rule_code: "OKF204",
-            severity: Severity::Suggestion,
-            message: "Index File entry is missing a markdown link".to_string(),
-            document: document.to_string(),
-            line: Some(line_number),
-            column: Some(1),
-        });
+        findings.push(Rule::IndexEntryLink.finding(
+            document,
+            "Index File entry is missing a markdown link",
+            Some(line_number),
+            Some(1),
+        ));
     }
 }
 
@@ -329,14 +322,12 @@ pub fn verify_log_file(path: &Path, contents: &str) -> VerificationReport {
     let mut findings = Vec::new();
 
     if split_frontmatter(contents).is_some() {
-        findings.push(Finding {
-            rule_code: "OKF201",
-            severity: Severity::Error,
-            message: "Log File must not contain frontmatter".to_string(),
-            document: document.clone(),
-            line: Some(1),
-            column: Some(1),
-        });
+        findings.push(Rule::LogNoFrontmatter.finding(
+            document.clone(),
+            "Log File must not contain frontmatter",
+            Some(1),
+            Some(1),
+        ));
     }
 
     let mut dates = Vec::new();
@@ -345,14 +336,12 @@ pub fn verify_log_file(path: &Path, contents: &str) -> VerificationReport {
         if let Some(date) = line.strip_prefix("## ") {
             let line_number = line_index + 1;
             if !is_iso_8601_date(date) {
-                findings.push(Finding {
-                    rule_code: "OKF301",
-                    severity: Severity::Error,
-                    message: format!("Log File date heading must use ISO 8601 date format: {date}"),
-                    document: document.clone(),
-                    line: Some(line_number),
-                    column: Some(4),
-                });
+                findings.push(Rule::LogDateFormat.finding(
+                    document.clone(),
+                    format!("Log File date heading must use ISO 8601 date format: {date}"),
+                    Some(line_number),
+                    Some(4),
+                ));
             } else {
                 dates.push((date.to_string(), line_number));
             }
@@ -362,14 +351,12 @@ pub fn verify_log_file(path: &Path, contents: &str) -> VerificationReport {
     for window in dates.windows(2) {
         let (current, next) = (&window[0], &window[1]);
         if current.0 < next.0 {
-            findings.push(Finding {
-                rule_code: "OKF302",
-                severity: Severity::Warning,
-                message: "Log File dates should be ordered newest first".to_string(),
-                document: document.clone(),
-                line: Some(current.1),
-                column: Some(1),
-            });
+            findings.push(Rule::LogDateOrder.finding(
+                document.clone(),
+                "Log File dates should be ordered newest first",
+                Some(current.1),
+                Some(1),
+            ));
         }
     }
 
@@ -436,11 +423,6 @@ pub fn format_report_with_threshold(
     }
 
     for finding in &report.findings {
-        let severity = match finding.severity {
-            Severity::Error => "error",
-            Severity::Warning => "warning",
-            Severity::Suggestion => "suggestion",
-        };
         let location = match (finding.line, finding.column) {
             (Some(line), Some(column)) => format!(":{line}:{column}"),
             (Some(line), None) => format!(":{line}"),
@@ -448,7 +430,11 @@ pub fn format_report_with_threshold(
         };
         output.push_str(&format!(
             "{}{}: {} [{}] {}\n",
-            finding.document, location, severity, finding.rule_code, finding.message
+            finding.document,
+            location,
+            severity_name(finding.severity()),
+            finding.rule_code(),
+            finding.message
         ));
     }
     output
@@ -482,8 +468,8 @@ fn format_finding_json(finding: &Finding) -> String {
     format!(
         "{{\"rule_code\":\"{}\",\"severity\":\"{}\",\
          \"message\":\"{}\",\"document\":\"{}\",\"location\":{}}}",
-        finding.rule_code,
-        severity_name(finding.severity),
+        finding.rule_code(),
+        severity_name(finding.severity()),
         json_escape(&finding.message),
         json_escape(&finding.document),
         format_location_json(finding)
@@ -563,14 +549,10 @@ fn filter_report(report: VerificationReport, options: &VerificationOptions) -> V
 }
 
 fn include_finding(finding: &Finding, options: &VerificationOptions) -> bool {
-    if options
-        .suppressions
-        .iter()
-        .any(|rule| rule == finding.rule_code)
-    {
+    if finding.is_suppressed_by(&options.suppressions) {
         return false;
     }
-    options.rule_set != RuleSet::Conformance || finding.severity == Severity::Error
+    options.rule_set != RuleSet::Conformance || finding.is_conformance_rule()
 }
 
 fn verify_bundle_links(
@@ -629,14 +611,12 @@ fn link_exists(bundle_root: &Path, document: &Path, target: &str) -> bool {
 }
 
 fn broken_link_finding(document: &Path, line: usize, target: &str) -> Finding {
-    Finding {
-        rule_code: "OKF400",
-        severity: Severity::Warning,
-        message: format!("Broken Link target does not exist: {target}"),
-        document: document.display().to_string(),
-        line: Some(line),
-        column: Some(1),
-    }
+    Rule::BrokenLink.finding(
+        document.display().to_string(),
+        format!("Broken Link target does not exist: {target}"),
+        Some(line),
+        Some(1),
+    )
 }
 
 pub fn check_index_maintenance(bundle_root: &Path) -> std::io::Result<VerificationReport> {
@@ -646,14 +626,12 @@ pub fn check_index_maintenance(bundle_root: &Path) -> std::io::Result<Verificati
         let expected = build_index_file(&directory)?;
         let current = std::fs::read_to_string(&index).ok();
         if current.as_deref() != Some(expected.as_str()) {
-            findings.push(Finding {
-                rule_code: "OKF500",
-                severity: Severity::Warning,
-                message: "Index File does not reflect the current Bundle Hierarchy".to_string(),
-                document: index.display().to_string(),
-                line: Some(1),
-                column: Some(1),
-            });
+            findings.push(Rule::IndexMaintenance.finding(
+                index.display().to_string(),
+                "Index File does not reflect the current Bundle Hierarchy",
+                Some(1),
+                Some(1),
+            ));
         }
     }
     Ok(VerificationReport { findings })
