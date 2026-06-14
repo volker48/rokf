@@ -29,8 +29,16 @@ rokf check                       # discover Bundle Root from current directory
 
 `rokf check` reads a single Concept Document or traverses an explicit Bundle Root and reports findings against the OKF specification:
 
-- **OKF001** — Frontmatter must be present and parseable YAML.
-- **OKF002** — Frontmatter must include a non-empty `type` field.
+- **OKF001** — Concept Document frontmatter must be present and parseable YAML.
+- **OKF002** — Concept Document frontmatter must include a non-empty `type` field.
+- **OKF101** — Concept Document frontmatter should include a `description` field.
+- **OKF200** — Reserved `index.md` files must not contain frontmatter (only the Root Index File may contain frontmatter).
+- **OKF201** — Reserved `log.md` files must not contain frontmatter.
+- **OKF202** — Root `index.md` frontmatter must be parseable YAML.
+- **OKF203** — Root `index.md` declares an unknown `okf_version` (warning; verified with best effort).
+- **OKF204** — Index File entry is missing a markdown link (suggestion).
+- **OKF301** — Log File date heading must use ISO 8601 date format.
+- **OKF302** — Log File dates should be ordered newest first (warning).
 
 By default, `rokf check` exits 1 for Error or Warning Findings. Use `--failure-threshold error`, `--failure-threshold warning`, or `--failure-threshold suggestion` to choose the minimum Severity that fails the workflow without changing conformance reporting.
 

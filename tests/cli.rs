@@ -379,7 +379,7 @@ fn check_explicit_bundle_root_bypasses_bundle_discovery() {
     fs::write(bundle.join("index.md"), "# Bundle Index\n").expect("write Root Index File");
     fs::write(
         bundle.join("log.md"),
-        "---\ntype: Log\ndescription: A log file.\n---\n",
+        "# Bundle Update Log\n\n## 2026-06-13\n* **Creation**: Initialized bundle.\n",
     )
     .expect("write Log File");
     fs::write(bundle.join("kix.md"), "# Kix\n").expect("write non-conformant concept document");
@@ -525,5 +525,200 @@ fn version_reports_cargo_package_version() {
     assert!(
         stdout.contains(env!("CARGO_PKG_VERSION")),
         "version should include Cargo package version: {stdout}"
+    );
+}
+
+#[test]
+fn check_validates_reserved_files_in_a_fixture_bundle() {
+    let bundle = temp_dir();
+    let concepts = bundle.join("concepts");
+    fs::create_dir_all(&concepts).expect("create nested bundle hierarchy");
+
+    fs::write(
+        bundle.join("index.md"),
+        "---\nokf_version: \"0.1\"\n---\n\n# Bundle Index\n\n* [Concepts](concepts/) — Directory of concepts\n",
+    )
+    .expect("write Root Index File");
+    fs::write(
+        bundle.join("log.md"),
+        "# Update Log\n\n## 2026-06-13\n* **Creation**: Initialized bundle.\n",
+    )
+    .expect("write Log File");
+    fs::write(
+        concepts.join("index.md"),
+        "# Concepts\n\n* [Widget](widget.md) — A representative concept\n",
+    )
+    .expect("write nested Index File");
+    fs::write(
+        concepts.join("widget.md"),
+        "---\ntype: Concept\ndescription: A representative concept.\n---\n\n# Widget\n",
+    )
+    .expect("write conformant Concept Document");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .arg(&bundle)
+        .output()
+        .expect("run rokf check bundle");
+
+    assert!(
+        output.status.success(),
+        "fixture bundle should be conformant and healthy; stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        stdout.contains("conformant: yes"),
+        "fixture bundle should be conformant: {stdout}"
+    );
+    assert!(
+        stdout.contains("healthy: yes"),
+        "fixture bundle should be healthy: {stdout}"
+    );
+    assert!(
+        !stdout.contains("OKF200"),
+        "nested Index Files should not contain frontmatter: {stdout}"
+    );
+    assert!(
+        !stdout.contains("OKF201"),
+        "Log Files should not contain frontmatter: {stdout}"
+    );
+}
+
+#[test]
+fn check_reports_index_file_frontmatter_as_an_error() {
+    let bundle = temp_dir();
+    fs::write(bundle.join("index.md"), "# Root Index\n").expect("write Root Index File");
+    let nested = bundle.join("nested");
+    fs::create_dir_all(&nested).expect("create nested directory");
+    fs::write(
+        nested.join("index.md"),
+        "---\nokf_version: \"0.1\"\n---\n\n# Nested Index\n",
+    )
+    .expect("write nested Index File with frontmatter");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .arg(&bundle)
+        .output()
+        .expect("run rokf check bundle");
+
+    assert_eq!(output.status.code(), Some(1));
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        stdout.contains("OKF200"),
+        "stdout should include Index File frontmatter Rule Code: {stdout}"
+    );
+    assert!(
+        stdout.contains("error"),
+        "stdout should report Index File frontmatter as an error: {stdout}"
+    );
+    assert!(
+        stdout.contains("conformant: no"),
+        "Index File frontmatter should break conformance: {stdout}"
+    );
+}
+
+#[test]
+fn check_reports_log_file_frontmatter_as_an_error() {
+    let bundle = temp_dir();
+    fs::write(bundle.join("index.md"), "# Root Index\n").expect("write Root Index File");
+    fs::write(
+        bundle.join("log.md"),
+        "---\ntype: Log\n---\n\n# Update Log\n",
+    )
+    .expect("write Log File with frontmatter");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .arg(&bundle)
+        .output()
+        .expect("run rokf check bundle");
+
+    assert_eq!(output.status.code(), Some(1));
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        stdout.contains("OKF201"),
+        "stdout should include Log File frontmatter Rule Code: {stdout}"
+    );
+    assert!(
+        stdout.contains("error"),
+        "stdout should report Log File frontmatter as an error: {stdout}"
+    );
+    assert!(
+        stdout.contains("conformant: no"),
+        "Log File frontmatter should break conformance: {stdout}"
+    );
+}
+
+#[test]
+fn check_reports_malformed_root_index_frontmatter_as_an_error() {
+    let bundle = temp_dir();
+    fs::write(
+        bundle.join("index.md"),
+        "---\nokf_version: \"0.1\"\nnot yaml: [
+---\n\n# Root Index\n",
+    )
+    .expect("write Root Index File with malformed frontmatter");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .arg(&bundle)
+        .output()
+        .expect("run rokf check bundle");
+
+    assert_eq!(output.status.code(), Some(1));
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        stdout.contains("OKF202"),
+        "stdout should include Root Index File frontmatter Rule Code: {stdout}"
+    );
+    assert!(
+        stdout.contains("error"),
+        "stdout should report malformed Root Index File frontmatter as an error: {stdout}"
+    );
+}
+
+#[test]
+fn check_reports_unknown_okf_version_as_a_warning() {
+    let bundle = temp_dir();
+    fs::write(
+        bundle.join("index.md"),
+        "---\nokf_version: \"9.9\"\n---\n\n# Root Index\n",
+    )
+    .expect("write Root Index File with unknown version");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .arg("--failure-threshold")
+        .arg("error")
+        .arg(&bundle)
+        .output()
+        .expect("run rokf check bundle with error Failure Threshold");
+
+    assert!(
+        output.status.success(),
+        "unknown OKF versions should not fail Verification: stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        stdout.contains("OKF203"),
+        "stdout should include unknown version Rule Code: {stdout}"
+    );
+    assert!(
+        stdout.contains("warning"),
+        "stdout should report unknown version as a warning: {stdout}"
+    );
+    assert!(
+        stdout.contains("conformant: yes"),
+        "unknown version should not break conformance: {stdout}"
     );
 }
