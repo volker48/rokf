@@ -25,6 +25,7 @@ cargo build --release
 rokf check path/to/concept.md
 rokf check path/to/bundle-root
 rokf check                       # discover Bundle Root from current directory
+rokf check -                     # read one Concept Document from stdin
 rokf check --output json path/to/concept.md
 rokf check --fix path/to/concept.md
 ```
@@ -43,6 +44,7 @@ rokf check --fix path/to/concept.md
 - **OKF301** — Log File date heading must use ISO 8601 date format.
 - **OKF302** — Log File dates should be ordered newest first (warning).
 - **OKF400** — Bundle Verification found a Broken Link between Concept Documents (warning).
+- **OKF500** — Index File does not reflect the current Bundle Hierarchy (warning).
 
 By default, `rokf check` exits 1 for Error or Warning Findings. Use `--failure-threshold error`, `--failure-threshold warning`, or `--failure-threshold suggestion` to choose the minimum Severity that fails the workflow without changing conformance reporting.
 
@@ -70,16 +72,19 @@ exclusions:
 ```
 
 Suppressions silence selected Rule Findings while keeping content in Verification Scope. Exclusions remove matching bundle-relative paths from Verification Scope.
+The `conformance` rule set reports only Error Findings.
 
 ### Format OKF Documents
 
 ```sh
 rokf format path/to/concept.md
+rokf format path/to/bundle-root
 rokf format --check path/to/concept.md
+rokf format --check path/to/bundle-root
 rokf format -
 ```
 
-Formatting trims trailing whitespace and ensures a final newline without changing semantic content. `--check` reports formatting drift without mutating files.
+Formatting trims trailing whitespace and ensures a final newline without changing semantic content. Directory targets recurse over markdown files. `--check` reports formatting drift without mutating files.
 
 ### Create Document Templates
 
@@ -96,9 +101,10 @@ Templates create well-shaped starting OKF Documents and refuse to overwrite exis
 ```sh
 rokf index --check path/to/bundle-root
 rokf index --fix path/to/bundle-root
+rokf index path/to/bundle-root
 ```
 
-Index Maintenance keeps `index.md` files aligned with the current Bundle Hierarchy. Generated entries are concise and use Concept `title` and `description` fields when present.
+Index Maintenance keeps `index.md` files aligned with the current Bundle Hierarchy. `--check` reports drift without writing changes. `--fix`, or omitting both mode flags, writes missing or stale Index Files. Generated entries are concise and use Concept `title` and `description` fields when present.
 
 ### General help
 
@@ -189,7 +195,3 @@ rokf/
 ├── CONTEXT.md            # Domain vocabulary
 └── Cargo.toml
 ```
-
-## License
-
-This project is licensed under the Apache License, Version 2.0. See [`LICENSE`](./LICENSE) for details.
