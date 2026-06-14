@@ -190,6 +190,98 @@ fn check_reports_missing_description_as_a_warning_without_breaking_conformance()
 }
 
 #[test]
+fn check_can_keep_warnings_visible_without_failing_at_error_threshold() {
+    let document = temp_file(
+        "customers.md",
+        "---\ntype: BigQuery Table\ntitle: Customers\n---\n\n# Customers\n",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .arg("--failure-threshold")
+        .arg("error")
+        .arg(&document)
+        .output()
+        .expect("run rokf check with error Failure Threshold");
+
+    assert!(
+        output.status.success(),
+        "warnings should not fail at the Error Failure Threshold; stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        stdout.contains("OKF101"),
+        "findings below the Failure Threshold should remain visible: {stdout}"
+    );
+    assert!(
+        stdout.contains("conformant: yes"),
+        "Failure Threshold should not redefine conformance: {stdout}"
+    );
+    assert!(
+        stdout.contains("healthy: yes"),
+        "warnings below the Failure Threshold should not make the document unhealthy: {stdout}"
+    );
+}
+
+#[test]
+fn check_warning_findings_fail_at_suggestion_threshold() {
+    let document = temp_file(
+        "customers.md",
+        "---\ntype: BigQuery Table\ntitle: Customers\n---\n\n# Customers\n",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .arg("--failure-threshold")
+        .arg("suggestion")
+        .arg(&document)
+        .output()
+        .expect("run rokf check with suggestion Failure Threshold");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        stdout.contains("OKF101"),
+        "warnings should remain visible at the Suggestion Failure Threshold: {stdout}"
+    );
+}
+
+#[test]
+fn check_applies_failure_threshold_to_stdin_documents() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .arg("--failure-threshold")
+        .arg("error")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn rokf check - with error Failure Threshold");
+
+    std::io::Write::write_all(
+        child.stdin.as_mut().expect("stdin is piped"),
+        b"---\ntype: BigQuery Table\n---\n\n# Customers\n",
+    )
+    .expect("write stdin document");
+
+    let output = child.wait_with_output().expect("wait for rokf check -");
+
+    assert!(
+        output.status.success(),
+        "stdin warnings should not fail at the Error Failure Threshold; stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        stdout.contains("OKF101"),
+        "stdin findings below the Failure Threshold should remain visible: {stdout}"
+    );
+}
+
+#[test]
 fn check_accepts_a_single_concept_document_from_stdin() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_rokf"))
         .arg("check")

@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
-    Error,
+    Suggestion,
     Warning,
+    Error,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,7 +24,14 @@ pub struct VerificationReport {
 
 impl VerificationReport {
     pub fn is_success(&self) -> bool {
-        self.findings.is_empty()
+        self.passes_failure_threshold(Severity::Warning)
+    }
+
+    pub fn passes_failure_threshold(&self, failure_threshold: Severity) -> bool {
+        !self
+            .findings
+            .iter()
+            .any(|finding| finding.severity >= failure_threshold)
     }
 
     pub fn is_conformant(&self) -> bool {
@@ -34,7 +42,14 @@ impl VerificationReport {
     }
 
     pub fn is_healthy(&self) -> bool {
-        self.findings.is_empty()
+        self.is_healthy_at(Severity::Warning)
+    }
+
+    pub fn is_healthy_at(&self, failure_threshold: Severity) -> bool {
+        self.is_conformant()
+            && !self.findings.iter().any(|finding| {
+                finding.severity != Severity::Error && finding.severity >= failure_threshold
+            })
     }
 
     fn extend(&mut self, other: VerificationReport) {
@@ -170,10 +185,17 @@ fn has_non_empty_string_field(frontmatter: &serde_yaml::Mapping, key: &serde_yam
 }
 
 pub fn format_report(report: &VerificationReport) -> String {
+    format_report_with_threshold(report, Severity::Warning)
+}
+
+pub fn format_report_with_threshold(
+    report: &VerificationReport,
+    failure_threshold: Severity,
+) -> String {
     let mut output = format!(
         "conformant: {}\nhealthy: {}\n",
         yes_no(report.is_conformant()),
-        yes_no(report.is_healthy())
+        yes_no(report.is_healthy_at(failure_threshold))
     );
 
     if report.findings.is_empty() {
@@ -185,6 +207,7 @@ pub fn format_report(report: &VerificationReport) -> String {
         let severity = match finding.severity {
             Severity::Error => "error",
             Severity::Warning => "warning",
+            Severity::Suggestion => "suggestion",
         };
         let location = match (finding.line, finding.column) {
             (Some(line), Some(column)) => format!(":{line}:{column}"),

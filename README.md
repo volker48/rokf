@@ -31,7 +31,7 @@ rokf check path/to/bundle-root
 - **OKF001** — Frontmatter must be present and parseable YAML.
 - **OKF002** — Frontmatter must include a non-empty `type` field.
 
-A conformant document produces `OK` and exits 0. A non-conformant document prints findings and exits 1.
+By default, `rokf check` exits 1 for Error or Warning Findings. Use `--failure-threshold error`, `--failure-threshold warning`, or `--failure-threshold suggestion` to choose the minimum Severity that fails the workflow without changing conformance reporting.
 
 ### General help
 
