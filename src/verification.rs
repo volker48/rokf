@@ -1,4 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+use crate::traversal::{self, BundleTraversal, OkfDocument, OkfDocumentKind};
 
 pub const KNOWN_OKF_VERSION: &str = "0.1";
 
@@ -82,20 +84,6 @@ impl VerificationReport {
     }
 }
 
-pub fn discover_bundle_root() -> Option<PathBuf> {
-    let mut current = std::env::current_dir().ok()?;
-
-    loop {
-        if current.join("index.md").is_file() {
-            return Some(current);
-        }
-        match current.parent() {
-            Some(parent) => current = parent.to_path_buf(),
-            None => return None,
-        }
-    }
-}
-
 pub fn verify_bundle_root(bundle_root: &Path) -> std::io::Result<VerificationReport> {
     verify_bundle_root_with_options(bundle_root, &VerificationOptions::default())
 }
@@ -104,67 +92,35 @@ pub fn verify_bundle_root_with_options(
     bundle_root: &Path,
     options: &VerificationOptions,
 ) -> std::io::Result<VerificationReport> {
-    let mut documents = Vec::new();
-    collect_okf_documents(bundle_root, &mut documents)?;
-    documents.sort();
+    let traversal = BundleTraversal::new(bundle_root);
+    let documents = traversal.verification_scope(&options.exclusions)?;
 
     let mut report = VerificationReport {
         findings: Vec::new(),
     };
 
-    let root_index = bundle_root.join("index.md");
-
     for document in &documents {
-        if is_excluded(bundle_root, document, &options.exclusions) {
-            continue;
-        }
+        let contents = std::fs::read_to_string(document.path())?;
 
-        let contents = std::fs::read_to_string(document)?;
-
-        if *document == root_index {
-            report.extend(verify_index_file(document, &contents, true));
-        } else if is_index_file(document) {
-            report.extend(verify_index_file(document, &contents, false));
-        } else if is_log_file(document) {
-            report.extend(verify_log_file(document, &contents));
-        } else {
-            report.extend(verify_concept_document(document, &contents));
+        match document.kind() {
+            OkfDocumentKind::RootIndexFile => {
+                report.extend(verify_index_file(document.path(), &contents, true));
+            }
+            OkfDocumentKind::IndexFile => {
+                report.extend(verify_index_file(document.path(), &contents, false));
+            }
+            OkfDocumentKind::LogFile => {
+                report.extend(verify_log_file(document.path(), &contents));
+            }
+            OkfDocumentKind::ConceptDocument => {
+                report.extend(verify_concept_document(document.path(), &contents));
+            }
         }
     }
 
-    report.extend(verify_bundle_links(bundle_root, &documents, options)?);
+    report.extend(verify_bundle_links(bundle_root, &documents)?);
 
     Ok(filter_report(report, options))
-}
-
-fn collect_okf_documents(directory: &Path, documents: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    let mut entries = std::fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(|entry| entry.path());
-
-    for entry in entries {
-        let path = entry.path();
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            collect_okf_documents(&path, documents)?;
-        } else if file_type.is_file() && path.extension().is_some_and(|extension| extension == "md")
-        {
-            documents.push(path);
-        }
-    }
-
-    Ok(())
-}
-
-fn is_index_file(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|file_name| file_name.to_str())
-        .is_some_and(|file_name| file_name == "index.md")
-}
-
-fn is_log_file(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|file_name| file_name.to_str())
-        .is_some_and(|file_name| file_name == "log.md")
 }
 
 pub fn verify_concept_document(path: &Path, contents: &str) -> VerificationReport {
@@ -617,29 +573,17 @@ fn include_finding(finding: &Finding, options: &VerificationOptions) -> bool {
     options.rule_set != RuleSet::Conformance || finding.severity == Severity::Error
 }
 
-fn is_excluded(bundle_root: &Path, document: &Path, exclusions: &[String]) -> bool {
-    let relative = document.strip_prefix(bundle_root).unwrap_or(document);
-    let relative = relative.to_string_lossy();
-    exclusions
-        .iter()
-        .any(|exclusion| relative == exclusion.as_str() || relative.starts_with(exclusion))
-}
-
 fn verify_bundle_links(
     bundle_root: &Path,
-    documents: &[PathBuf],
-    options: &VerificationOptions,
+    documents: &[OkfDocument],
 ) -> std::io::Result<VerificationReport> {
     let mut findings = Vec::new();
     for document in documents {
-        if is_excluded(bundle_root, document, &options.exclusions) || is_index_file(document) {
+        if !document.is_concept_document() {
             continue;
         }
-        if is_log_file(document) {
-            continue;
-        }
-        let contents = std::fs::read_to_string(document)?;
-        findings.extend(find_broken_links(bundle_root, document, &contents));
+        let contents = std::fs::read_to_string(document.path())?;
+        findings.extend(find_broken_links(bundle_root, document.path(), &contents));
     }
     Ok(VerificationReport { findings })
 }
@@ -697,9 +641,9 @@ fn broken_link_finding(document: &Path, line: usize, target: &str) -> Finding {
 
 pub fn check_index_maintenance(bundle_root: &Path) -> std::io::Result<VerificationReport> {
     let mut findings = Vec::new();
-    for directory in bundle_directories(bundle_root)? {
+    for directory in BundleTraversal::new(bundle_root).directories()? {
         let index = directory.join("index.md");
-        let expected = build_index_file(bundle_root, &directory)?;
+        let expected = build_index_file(&directory)?;
         let current = std::fs::read_to_string(&index).ok();
         if current.as_deref() != Some(expected.as_str()) {
             findings.push(Finding {
@@ -716,35 +660,15 @@ pub fn check_index_maintenance(bundle_root: &Path) -> std::io::Result<Verificati
 }
 
 pub fn fix_index_maintenance(bundle_root: &Path) -> std::io::Result<VerificationReport> {
-    for directory in bundle_directories(bundle_root)? {
+    for directory in BundleTraversal::new(bundle_root).directories()? {
         let index = directory.join("index.md");
-        let expected = build_index_file(bundle_root, &directory)?;
+        let expected = build_index_file(&directory)?;
         std::fs::write(index, expected)?;
     }
     check_index_maintenance(bundle_root)
 }
 
-fn bundle_directories(bundle_root: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let mut directories = Vec::new();
-    collect_bundle_directories(bundle_root, &mut directories)?;
-    directories.sort();
-    Ok(directories)
-}
-
-fn collect_bundle_directories(
-    directory: &Path,
-    directories: &mut Vec<PathBuf>,
-) -> std::io::Result<()> {
-    directories.push(directory.to_path_buf());
-    for entry in std::fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()? {
-        if entry.file_type()?.is_dir() {
-            collect_bundle_directories(&entry.path(), directories)?;
-        }
-    }
-    Ok(())
-}
-
-fn build_index_file(_bundle_root: &Path, directory: &Path) -> std::io::Result<String> {
+fn build_index_file(directory: &Path) -> std::io::Result<String> {
     let mut entries = std::fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(|entry| entry.path());
     let mut lines = vec!["# Index".to_string(), String::new()];
@@ -757,10 +681,7 @@ fn build_index_file(_bundle_root: &Path, directory: &Path) -> std::io::Result<St
                 title_from_path(&path),
                 title_link(&path)
             ));
-        } else if path.extension().is_some_and(|extension| extension == "md")
-            && !is_index_file(&path)
-            && !is_log_file(&path)
-        {
+        } else if traversal::is_concept_document_file(&path) {
             lines.push(concept_index_entry(&path)?);
         }
     }

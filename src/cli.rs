@@ -4,10 +4,11 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+use crate::traversal;
 use crate::verification::{
-    RuleSet, Severity, VerificationOptions, check_index_maintenance, discover_bundle_root,
-    fix_document, fix_index_maintenance, format_document, format_report_json,
-    format_report_with_threshold, verify_bundle_root_with_options, verify_concept_document,
+    RuleSet, Severity, VerificationOptions, check_index_maintenance, fix_document,
+    fix_index_maintenance, format_document, format_report_json, format_report_with_threshold,
+    verify_bundle_root_with_options, verify_concept_document,
 };
 
 #[derive(Debug, Parser)]
@@ -150,7 +151,7 @@ fn check(
 ) -> ExitCode {
     let target = match target {
         Some(target) => target,
-        None => match discover_bundle_root() {
+        None => match traversal::discover_bundle_root() {
             Some(root) => root,
             None => {
                 eprintln!(
@@ -381,11 +382,13 @@ fn format_command(target: PathBuf, check: bool) -> ExitCode {
 
 fn format_directory(directory: &std::path::Path, check: bool) -> ExitCode {
     let mut drift = false;
-    let mut documents = Vec::new();
-    if let Err(error) = collect_markdown_documents(directory, &mut documents) {
-        eprintln!("{}: error: {error}", directory.display());
-        return ExitCode::from(2);
-    }
+    let documents = match traversal::markdown_documents(directory) {
+        Ok(documents) => documents,
+        Err(error) => {
+            eprintln!("{}: error: {error}", directory.display());
+            return ExitCode::from(2);
+        }
+    };
     for document in documents {
         match format_document_path(&document, check) {
             Ok(changed) => drift |= changed,
@@ -414,26 +417,6 @@ fn format_document_path(target: &std::path::Path, check: bool) -> Result<bool, E
         ExitCode::from(2)
     })?;
     Ok(false)
-}
-
-fn collect_markdown_documents(
-    directory: &std::path::Path,
-    documents: &mut Vec<PathBuf>,
-) -> std::io::Result<()> {
-    let mut entries = std::fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(|entry| entry.path());
-    for entry in entries {
-        if entry.file_type()?.is_dir() {
-            collect_markdown_documents(&entry.path(), documents)?;
-        } else if entry
-            .path()
-            .extension()
-            .is_some_and(|extension| extension == "md")
-        {
-            documents.push(entry.path());
-        }
-    }
-    Ok(())
 }
 
 fn format_stdin() -> ExitCode {
