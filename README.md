@@ -167,12 +167,12 @@ The pre-commit hook runs `cargo fmt --check` and `cargo clippy` on staged change
 ### Releases
 
 ```sh
-make release-patch   # bump 0.1.0 → 0.1.1
-make release-minor   # bump 0.1.0 → 0.2.0
-make release-major   # bump 0.1.0 → 1.0.0
+make release-patch   # bump 1.0.0 → 1.0.1
+make release-minor   # bump 1.0.0 → 1.1.0
+make release-major   # bump 1.0.0 → 2.0.0
 ```
 
-Release targets run quality gates (fmt, clippy, test) before bumping `Cargo.toml` and `Cargo.lock`. They do not publish to crates.io or create GitHub releases — those steps are manual.
+Release targets bump `Cargo.toml` and `Cargo.lock`, then run quality gates (fmt, clippy, test). They do not publish to crates.io or create GitHub releases — those steps are manual.
 
 ## Project structure
 

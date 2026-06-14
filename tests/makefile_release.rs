@@ -17,12 +17,30 @@ fn temp_repo() -> std::path::PathBuf {
     dir
 }
 
+fn current_package_version() -> (u64, u64, u64) {
+    let manifest = fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
+    let version = manifest
+        .lines()
+        .find_map(|line| line.strip_prefix("version = \"")?.strip_suffix('"'))
+        .expect("Cargo.toml package version");
+    let parts: Vec<_> = version.split('.').collect();
+
+    assert_eq!(parts.len(), 3, "expected semver package version: {version}");
+    (
+        parts[0].parse().expect("major version"),
+        parts[1].parse().expect("minor version"),
+        parts[2].parse().expect("patch version"),
+    )
+}
+
 #[test]
 fn release_targets_update_cargo_package_metadata() {
+    let (major, minor, patch) = current_package_version();
+
     for (target, expected_version) in [
-        ("release-patch", "0.1.1"),
-        ("release-minor", "0.2.0"),
-        ("release-major", "1.0.0"),
+        ("release-patch", format!("{major}.{minor}.{}", patch + 1)),
+        ("release-minor", format!("{major}.{}.0", minor + 1)),
+        ("release-major", format!("{}.0.0", major + 1)),
     ] {
         let repo = temp_repo();
 
