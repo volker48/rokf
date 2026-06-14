@@ -25,6 +25,8 @@ cargo build --release
 rokf check path/to/concept.md
 rokf check path/to/bundle-root
 rokf check                       # discover Bundle Root from current directory
+rokf check --output json path/to/concept.md
+rokf check --fix path/to/concept.md
 ```
 
 `rokf check` reads a single Concept Document or traverses an explicit Bundle Root and reports findings against the OKF specification:
@@ -32,6 +34,7 @@ rokf check                       # discover Bundle Root from current directory
 - **OKF001** — Concept Document frontmatter must be present and parseable YAML.
 - **OKF002** — Concept Document frontmatter must include a non-empty `type` field.
 - **OKF101** — Concept Document frontmatter should include a `description` field.
+- **OKF102** — Concept Document `tags` should be sorted.
 - **OKF200** — Reserved `index.md` files must not contain frontmatter (only the Root Index File may contain frontmatter).
 - **OKF201** — Reserved `log.md` files must not contain frontmatter.
 - **OKF202** — Root `index.md` frontmatter must be parseable YAML.
@@ -39,8 +42,63 @@ rokf check                       # discover Bundle Root from current directory
 - **OKF204** — Index File entry is missing a markdown link (suggestion).
 - **OKF301** — Log File date heading must use ISO 8601 date format.
 - **OKF302** — Log File dates should be ordered newest first (warning).
+- **OKF400** — Bundle Verification found a Broken Link between Concept Documents (warning).
 
 By default, `rokf check` exits 1 for Error or Warning Findings. Use `--failure-threshold error`, `--failure-threshold warning`, or `--failure-threshold suggestion` to choose the minimum Severity that fails the workflow without changing conformance reporting.
+
+`rokf check --fix` applies safe Fixes for Fixable Findings. The initial Fix sorts inline `tags` without changing Producer-defined Fields or Body content. With stdin (`rokf check --fix -`), rokf writes the fixed document to stdout rather than mutating a file.
+
+`rokf check --output json` emits Structured Output with conformance, health, workflow status, and stable Finding fields for agent and automation workflows.
+
+### Configure verification
+
+When checking a Bundle Root, rokf reads `rokf.yml` from that root if present. You can also pass an explicit file:
+
+```sh
+rokf check --config path/to/rokf.yml path/to/bundle-root
+```
+
+Supported MVP fields:
+
+```yaml
+failure_threshold: error
+rule_set: default       # default | conformance
+suppressions:
+  - OKF101
+exclusions:
+  - drafts/
+```
+
+Suppressions silence selected Rule Findings while keeping content in Verification Scope. Exclusions remove matching bundle-relative paths from Verification Scope.
+
+### Format OKF Documents
+
+```sh
+rokf format path/to/concept.md
+rokf format --check path/to/concept.md
+rokf format -
+```
+
+Formatting trims trailing whitespace and ensures a final newline without changing semantic content. `--check` reports formatting drift without mutating files.
+
+### Create Document Templates
+
+```sh
+rokf template concept --type "BigQuery Table" path/to/concept.md
+rokf template index path/to/index.md
+rokf template log path/to/log.md
+```
+
+Templates create well-shaped starting OKF Documents and refuse to overwrite existing files. Concept Types are producer-defined; rokf does not use a type registry or invent Descriptions, Citations, or Body content.
+
+### Maintain Index Files
+
+```sh
+rokf index --check path/to/bundle-root
+rokf index --fix path/to/bundle-root
+```
+
+Index Maintenance keeps `index.md` files aligned with the current Bundle Hierarchy. Generated entries are concise and use Concept `title` and `description` fields when present.
 
 ### General help
 
@@ -74,6 +132,7 @@ just check star-wars     # matches the Star Wars demo bundle
 just check rex           # matches captain-rex.md
 just check phase         # matches phase-ii-armor.md
 just check 501           # matches 501st-legion.md
+just format rex          # formats the matching demo Concept Document
 ```
 
 Run against all top-level demo bundles to sanity-check before pushing:

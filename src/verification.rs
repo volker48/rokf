@@ -24,6 +24,29 @@ pub struct VerificationReport {
     pub findings: Vec<Finding>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerificationOptions {
+    pub rule_set: RuleSet,
+    pub suppressions: Vec<String>,
+    pub exclusions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleSet {
+    Default,
+    Conformance,
+}
+
+impl Default for VerificationOptions {
+    fn default() -> Self {
+        Self {
+            rule_set: RuleSet::Default,
+            suppressions: Vec::new(),
+            exclusions: Vec::new(),
+        }
+    }
+}
+
 impl VerificationReport {
     pub fn is_success(&self) -> bool {
         self.passes_failure_threshold(Severity::Warning)
@@ -74,6 +97,13 @@ pub fn discover_bundle_root() -> Option<PathBuf> {
 }
 
 pub fn verify_bundle_root(bundle_root: &Path) -> std::io::Result<VerificationReport> {
+    verify_bundle_root_with_options(bundle_root, &VerificationOptions::default())
+}
+
+pub fn verify_bundle_root_with_options(
+    bundle_root: &Path,
+    options: &VerificationOptions,
+) -> std::io::Result<VerificationReport> {
     let mut documents = Vec::new();
     collect_okf_documents(bundle_root, &mut documents)?;
     documents.sort();
@@ -84,21 +114,27 @@ pub fn verify_bundle_root(bundle_root: &Path) -> std::io::Result<VerificationRep
 
     let root_index = bundle_root.join("index.md");
 
-    for document in documents {
-        let contents = std::fs::read_to_string(&document)?;
+    for document in &documents {
+        if is_excluded(bundle_root, document, &options.exclusions) {
+            continue;
+        }
 
-        if document == root_index {
-            report.extend(verify_index_file(&document, &contents, true));
-        } else if is_index_file(&document) {
-            report.extend(verify_index_file(&document, &contents, false));
-        } else if is_log_file(&document) {
-            report.extend(verify_log_file(&document, &contents));
+        let contents = std::fs::read_to_string(document)?;
+
+        if *document == root_index {
+            report.extend(verify_index_file(document, &contents, true));
+        } else if is_index_file(document) {
+            report.extend(verify_index_file(document, &contents, false));
+        } else if is_log_file(document) {
+            report.extend(verify_log_file(document, &contents));
         } else {
-            report.extend(verify_concept_document(&document, &contents));
+            report.extend(verify_concept_document(document, &contents));
         }
     }
 
-    Ok(report)
+    report.extend(verify_bundle_links(bundle_root, &documents, options)?);
+
+    Ok(filter_report(report, options))
 }
 
 fn collect_okf_documents(directory: &Path, documents: &mut Vec<PathBuf>) -> std::io::Result<()> {
@@ -196,6 +232,17 @@ pub fn verify_concept_document(path: &Path, contents: &str) -> VerificationRepor
             rule_code: "OKF101",
             severity: Severity::Warning,
             message: "Concept Document Frontmatter should include a Description".to_string(),
+            document: document.clone(),
+            line: Some(2),
+            column: Some(1),
+        });
+    }
+
+    if tags_are_unsorted(&parsed_frontmatter) {
+        findings.push(Finding {
+            rule_code: "OKF102",
+            severity: Severity::Suggestion,
+            message: "Concept Document Tags should be sorted".to_string(),
             document,
             line: Some(2),
             column: Some(1),
@@ -211,6 +258,21 @@ fn has_non_empty_string_field(frontmatter: &serde_yaml::Mapping, key: &serde_yam
         .and_then(serde_yaml::Value::as_str)
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false)
+}
+
+fn tags_are_unsorted(frontmatter: &serde_yaml::Mapping) -> bool {
+    let key = serde_yaml::Value::String("tags".to_string());
+    let Some(tags) = frontmatter
+        .get(&key)
+        .and_then(serde_yaml::Value::as_sequence)
+    else {
+        return false;
+    };
+    let strings = tags
+        .iter()
+        .filter_map(serde_yaml::Value::as_str)
+        .collect::<Vec<_>>();
+    strings.windows(2).any(|pair| pair[0] > pair[1])
 }
 
 pub fn verify_index_file(path: &Path, contents: &str, is_root: bool) -> VerificationReport {
@@ -251,7 +313,8 @@ pub fn verify_index_file(path: &Path, contents: &str, is_root: bool) -> Verifica
                                     rule_code: "OKF203",
                                     severity: Severity::Warning,
                                     message: format!(
-                                        "Root Index File declares unknown OKF version {version}; best-effort verification will be used"
+                                        "Root Index File declares unknown OKF version {version}; \
+                                         best-effort verification will be used"
                                     ),
                                     document: document.clone(),
                                     line: Some(2),
@@ -437,4 +500,329 @@ pub fn format_report_with_threshold(
 
 fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
+}
+
+pub fn format_report_json(report: &VerificationReport, failure_threshold: Severity) -> String {
+    let findings = report
+        .findings
+        .iter()
+        .map(format_finding_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"conformant\":{},\"healthy\":{},\"status\":\"{}\",\"findings\":[{}]}}\n",
+        report.is_conformant(),
+        report.is_healthy_at(failure_threshold),
+        if report.passes_failure_threshold(failure_threshold) {
+            "pass"
+        } else {
+            "fail"
+        },
+        findings
+    )
+}
+
+fn format_finding_json(finding: &Finding) -> String {
+    format!(
+        "{{\"rule_code\":\"{}\",\"severity\":\"{}\",\
+         \"message\":\"{}\",\"document\":\"{}\",\"location\":{}}}",
+        finding.rule_code,
+        severity_name(finding.severity),
+        json_escape(&finding.message),
+        json_escape(&finding.document),
+        format_location_json(finding)
+    )
+}
+
+fn format_location_json(finding: &Finding) -> String {
+    match (finding.line, finding.column) {
+        (Some(line), Some(column)) => format!("{{\"line\":{line},\"column\":{column}}}"),
+        (Some(line), None) => format!("{{\"line\":{line}}}"),
+        _ => "null".to_string(),
+    }
+}
+
+fn severity_name(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Suggestion => "suggestion",
+    }
+}
+
+fn json_escape(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+}
+
+pub fn format_document(contents: &str) -> String {
+    let mut output = contents
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    output.push('\n');
+    output
+}
+
+pub fn fix_document(contents: &str) -> String {
+    sort_inline_tags(&format_document(contents))
+}
+
+fn sort_inline_tags(contents: &str) -> String {
+    contents
+        .lines()
+        .map(sort_inline_tags_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
+fn sort_inline_tags_line(line: &str) -> String {
+    let Some(values) = line
+        .strip_prefix("tags: [")
+        .and_then(|rest| rest.strip_suffix(']'))
+    else {
+        return line.to_string();
+    };
+    let mut tags = values
+        .split(',')
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+        .collect::<Vec<_>>();
+    tags.sort_unstable();
+    format!("tags: [{}]", tags.join(", "))
+}
+
+fn filter_report(report: VerificationReport, options: &VerificationOptions) -> VerificationReport {
+    VerificationReport {
+        findings: report
+            .findings
+            .into_iter()
+            .filter(|finding| include_finding(finding, options))
+            .collect(),
+    }
+}
+
+fn include_finding(finding: &Finding, options: &VerificationOptions) -> bool {
+    if options
+        .suppressions
+        .iter()
+        .any(|rule| rule == finding.rule_code)
+    {
+        return false;
+    }
+    options.rule_set != RuleSet::Conformance || finding.severity == Severity::Error
+}
+
+fn is_excluded(bundle_root: &Path, document: &Path, exclusions: &[String]) -> bool {
+    let relative = document.strip_prefix(bundle_root).unwrap_or(document);
+    let relative = relative.to_string_lossy();
+    exclusions
+        .iter()
+        .any(|exclusion| relative == exclusion.as_str() || relative.starts_with(exclusion))
+}
+
+fn verify_bundle_links(
+    bundle_root: &Path,
+    documents: &[PathBuf],
+    options: &VerificationOptions,
+) -> std::io::Result<VerificationReport> {
+    let mut findings = Vec::new();
+    for document in documents {
+        if is_excluded(bundle_root, document, &options.exclusions) || is_index_file(document) {
+            continue;
+        }
+        if is_log_file(document) {
+            continue;
+        }
+        let contents = std::fs::read_to_string(document)?;
+        findings.extend(find_broken_links(bundle_root, document, &contents));
+    }
+    Ok(VerificationReport { findings })
+}
+
+fn find_broken_links(bundle_root: &Path, document: &Path, contents: &str) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for (line_index, line) in contents.lines().enumerate() {
+        for target in markdown_link_targets(line) {
+            if should_check_link(target) && !link_exists(bundle_root, document, target) {
+                findings.push(broken_link_finding(document, line_index + 1, target));
+            }
+        }
+    }
+    findings
+}
+
+fn markdown_link_targets(line: &str) -> Vec<&str> {
+    let mut targets = Vec::new();
+    let mut rest = line;
+    while let Some(start) = rest.find("](") {
+        rest = &rest[start + 2..];
+        let Some(end) = rest.find(')') else {
+            break;
+        };
+        targets.push(&rest[..end]);
+        rest = &rest[end + 1..];
+    }
+    targets
+}
+
+fn should_check_link(target: &str) -> bool {
+    target.ends_with(".md") && !target.contains("://") && !target.starts_with('#')
+}
+
+fn link_exists(bundle_root: &Path, document: &Path, target: &str) -> bool {
+    let target = target.split('#').next().unwrap_or(target);
+    let path = if let Some(bundle_relative) = target.strip_prefix('/') {
+        bundle_root.join(bundle_relative)
+    } else {
+        document.parent().unwrap_or(bundle_root).join(target)
+    };
+    path.is_file()
+}
+
+fn broken_link_finding(document: &Path, line: usize, target: &str) -> Finding {
+    Finding {
+        rule_code: "OKF400",
+        severity: Severity::Warning,
+        message: format!("Broken Link target does not exist: {target}"),
+        document: document.display().to_string(),
+        line: Some(line),
+        column: Some(1),
+    }
+}
+
+pub fn check_index_maintenance(bundle_root: &Path) -> std::io::Result<VerificationReport> {
+    let mut findings = Vec::new();
+    for directory in bundle_directories(bundle_root)? {
+        let index = directory.join("index.md");
+        let expected = build_index_file(bundle_root, &directory)?;
+        let current = std::fs::read_to_string(&index).ok();
+        if current.as_deref() != Some(expected.as_str()) {
+            findings.push(Finding {
+                rule_code: "OKF500",
+                severity: Severity::Warning,
+                message: "Index File does not reflect the current Bundle Hierarchy".to_string(),
+                document: index.display().to_string(),
+                line: Some(1),
+                column: Some(1),
+            });
+        }
+    }
+    Ok(VerificationReport { findings })
+}
+
+pub fn fix_index_maintenance(bundle_root: &Path) -> std::io::Result<VerificationReport> {
+    for directory in bundle_directories(bundle_root)? {
+        let index = directory.join("index.md");
+        let expected = build_index_file(bundle_root, &directory)?;
+        std::fs::write(index, expected)?;
+    }
+    check_index_maintenance(bundle_root)
+}
+
+fn bundle_directories(bundle_root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut directories = Vec::new();
+    collect_bundle_directories(bundle_root, &mut directories)?;
+    directories.sort();
+    Ok(directories)
+}
+
+fn collect_bundle_directories(
+    directory: &Path,
+    directories: &mut Vec<PathBuf>,
+) -> std::io::Result<()> {
+    directories.push(directory.to_path_buf());
+    for entry in std::fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()? {
+        if entry.file_type()?.is_dir() {
+            collect_bundle_directories(&entry.path(), directories)?;
+        }
+    }
+    Ok(())
+}
+
+fn build_index_file(_bundle_root: &Path, directory: &Path) -> std::io::Result<String> {
+    let mut entries = std::fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
+    let mut lines = vec!["# Index".to_string(), String::new()];
+
+    for entry in entries {
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            lines.push(format!(
+                "* [{}]({}/)",
+                title_from_path(&path),
+                title_link(&path)
+            ));
+        } else if path.extension().is_some_and(|extension| extension == "md")
+            && !is_index_file(&path)
+            && !is_log_file(&path)
+        {
+            lines.push(concept_index_entry(&path)?);
+        }
+    }
+
+    Ok(lines.join("\n") + "\n")
+}
+
+fn concept_index_entry(path: &Path) -> std::io::Result<String> {
+    let metadata = read_concept_metadata(path)?;
+    let mut line = format!(
+        "* [{}]({})",
+        metadata.title,
+        path.file_name().unwrap().to_string_lossy()
+    );
+    if let Some(description) = metadata.description {
+        line.push_str(&format!(" - {description}"));
+    }
+    Ok(line)
+}
+
+struct ConceptMetadata {
+    title: String,
+    description: Option<String>,
+}
+
+fn read_concept_metadata(path: &Path) -> std::io::Result<ConceptMetadata> {
+    let contents = std::fs::read_to_string(path)?;
+    let mapping = split_frontmatter(&contents)
+        .and_then(|(frontmatter, _)| serde_yaml::from_str::<serde_yaml::Mapping>(frontmatter).ok());
+    Ok(ConceptMetadata {
+        title: metadata_value(&mapping, "title").unwrap_or_else(|| title_from_path(path)),
+        description: metadata_value(&mapping, "description"),
+    })
+}
+
+fn metadata_value(mapping: &Option<serde_yaml::Mapping>, key: &str) -> Option<String> {
+    let key = serde_yaml::Value::String(key.to_string());
+    mapping
+        .as_ref()
+        .and_then(|mapping| mapping.get(&key))
+        .and_then(serde_yaml::Value::as_str)
+        .map(str::to_string)
+}
+
+fn title_from_path(path: &Path) -> String {
+    let stem = path.file_stem().or_else(|| path.file_name()).unwrap();
+    stem.to_string_lossy()
+        .replace('-', " ")
+        .split_whitespace()
+        .map(capitalize)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn title_link(path: &Path) -> String {
+    path.file_name().unwrap().to_string_lossy().to_string()
+}
+
+fn capitalize(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
