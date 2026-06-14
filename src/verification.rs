@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::document::OkfDocumentText;
 use crate::traversal::{self, BundleTraversal, OkfDocument, OkfDocumentKind};
 
 mod rules;
@@ -143,9 +144,10 @@ pub fn verify_bundle_root_with_options(
 
 pub fn verify_concept_document(path: &Path, contents: &str) -> VerificationReport {
     let document = path.display().to_string();
+    let parsed = OkfDocumentText::new(contents);
     let mut findings = Vec::new();
 
-    if !contents.starts_with("---\n") && contents.trim() != "---" {
+    if !parsed.has_frontmatter_opening() {
         findings.push(Rule::ConceptFrontmatter.finding(
             document,
             "Concept Document must start with Frontmatter delimited by ---",
@@ -155,7 +157,7 @@ pub fn verify_concept_document(path: &Path, contents: &str) -> VerificationRepor
         return VerificationReport { findings };
     }
 
-    let Some(frontmatter_end) = contents[4..].find("\n---") else {
+    let Some(frontmatter) = parsed.closed_frontmatter() else {
         findings.push(Rule::ConceptFrontmatter.finding(
             document,
             "Concept Document Frontmatter must have a closing --- delimiter",
@@ -165,8 +167,7 @@ pub fn verify_concept_document(path: &Path, contents: &str) -> VerificationRepor
         return VerificationReport { findings };
     };
 
-    let frontmatter = &contents[4..4 + frontmatter_end];
-    let parsed_frontmatter = match serde_yaml::from_str::<serde_yaml::Mapping>(frontmatter) {
+    let parsed_frontmatter = match frontmatter.parse_mapping() {
         Ok(frontmatter) => frontmatter,
         Err(error) => {
             let location = error.location();
@@ -180,10 +181,7 @@ pub fn verify_concept_document(path: &Path, contents: &str) -> VerificationRepor
         }
     };
 
-    let type_key = serde_yaml::Value::String("type".to_string());
-    let has_type = has_non_empty_string_field(&parsed_frontmatter, &type_key);
-
-    if !has_type {
+    if !has_non_empty_string_field(&parsed_frontmatter, "type") {
         findings.push(Rule::ConceptType.finding(
             document.clone(),
             "Concept Document Frontmatter must include a Concept Type",
@@ -192,8 +190,7 @@ pub fn verify_concept_document(path: &Path, contents: &str) -> VerificationRepor
         ));
     }
 
-    let description_key = serde_yaml::Value::String("description".to_string());
-    if !has_non_empty_string_field(&parsed_frontmatter, &description_key) {
+    if !has_non_empty_string_field(&parsed_frontmatter, "description") {
         findings.push(Rule::ConceptDescription.finding(
             document.clone(),
             "Concept Document Frontmatter should include a Description",
@@ -214,9 +211,10 @@ pub fn verify_concept_document(path: &Path, contents: &str) -> VerificationRepor
     VerificationReport { findings }
 }
 
-fn has_non_empty_string_field(frontmatter: &serde_yaml::Mapping, key: &serde_yaml::Value) -> bool {
+fn has_non_empty_string_field(frontmatter: &serde_yaml::Mapping, key: &str) -> bool {
+    let key = serde_yaml::Value::String(key.to_string());
     frontmatter
-        .get(key)
+        .get(&key)
         .and_then(serde_yaml::Value::as_str)
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false)
@@ -239,9 +237,10 @@ fn tags_are_unsorted(frontmatter: &serde_yaml::Mapping) -> bool {
 
 pub fn verify_index_file(path: &Path, contents: &str, is_root: bool) -> VerificationReport {
     let document = path.display().to_string();
+    let parsed = OkfDocumentText::new(contents);
     let mut findings = Vec::new();
 
-    if let Some((frontmatter, body_start)) = split_frontmatter(contents) {
+    if let Some(frontmatter) = parsed.closed_frontmatter() {
         if !is_root {
             findings.push(Rule::IndexNoFrontmatter.finding(
                 document.clone(),
@@ -250,7 +249,7 @@ pub fn verify_index_file(path: &Path, contents: &str, is_root: bool) -> Verifica
                 Some(1),
             ));
         } else {
-            match serde_yaml::from_str::<serde_yaml::Mapping>(frontmatter) {
+            match frontmatter.parse_mapping() {
                 Err(error) => {
                     let location = error.location();
                     findings.push(Rule::RootIndexFrontmatter.finding(
@@ -288,11 +287,15 @@ pub fn verify_index_file(path: &Path, contents: &str, is_root: bool) -> Verifica
             }
         }
 
-        for (line_index, line) in contents.lines().enumerate().skip(body_start) {
+        for (line_index, line) in parsed
+            .lines()
+            .enumerate()
+            .skip(frontmatter.body_start_index())
+        {
             check_index_entry_line(&document, line, line_index + 1, &mut findings);
         }
     } else {
-        for (line_index, line) in contents.lines().enumerate() {
+        for (line_index, line) in parsed.lines().enumerate() {
             check_index_entry_line(&document, line, line_index + 1, &mut findings);
         }
     }
@@ -319,9 +322,10 @@ fn check_index_entry_line(
 
 pub fn verify_log_file(path: &Path, contents: &str) -> VerificationReport {
     let document = path.display().to_string();
+    let parsed = OkfDocumentText::new(contents);
     let mut findings = Vec::new();
 
-    if split_frontmatter(contents).is_some() {
+    if parsed.closed_frontmatter().is_some() {
         findings.push(Rule::LogNoFrontmatter.finding(
             document.clone(),
             "Log File must not contain frontmatter",
@@ -332,7 +336,7 @@ pub fn verify_log_file(path: &Path, contents: &str) -> VerificationReport {
 
     let mut dates = Vec::new();
 
-    for (line_index, line) in contents.lines().enumerate() {
+    for (line_index, line) in parsed.lines().enumerate() {
         if let Some(date) = line.strip_prefix("## ") {
             let line_number = line_index + 1;
             if !is_iso_8601_date(date) {
@@ -361,23 +365,6 @@ pub fn verify_log_file(path: &Path, contents: &str) -> VerificationReport {
     }
 
     VerificationReport { findings }
-}
-
-fn split_frontmatter(contents: &str) -> Option<(&str, usize)> {
-    if contents.trim() == "---" {
-        return None;
-    }
-
-    if !contents.starts_with("---\n") {
-        return None;
-    }
-
-    let after_opening = &contents[4..];
-    let end = after_opening.find("\n---")?;
-    let frontmatter = &after_opening[..end];
-    let body_line_offset = contents[..4 + end].matches('\n').count().saturating_sub(1) + 1;
-
-    Some((frontmatter, body_line_offset + 1))
 }
 
 fn is_iso_8601_date(value: &str) -> bool {
@@ -687,21 +674,13 @@ struct ConceptMetadata {
 
 fn read_concept_metadata(path: &Path) -> std::io::Result<ConceptMetadata> {
     let contents = std::fs::read_to_string(path)?;
-    let mapping = split_frontmatter(&contents)
-        .and_then(|(frontmatter, _)| serde_yaml::from_str::<serde_yaml::Mapping>(frontmatter).ok());
+    let parsed = OkfDocumentText::new(&contents);
     Ok(ConceptMetadata {
-        title: metadata_value(&mapping, "title").unwrap_or_else(|| title_from_path(path)),
-        description: metadata_value(&mapping, "description"),
+        title: parsed
+            .metadata_value("title")
+            .unwrap_or_else(|| title_from_path(path)),
+        description: parsed.metadata_value("description"),
     })
-}
-
-fn metadata_value(mapping: &Option<serde_yaml::Mapping>, key: &str) -> Option<String> {
-    let key = serde_yaml::Value::String(key.to_string());
-    mapping
-        .as_ref()
-        .and_then(|mapping| mapping.get(&key))
-        .and_then(serde_yaml::Value::as_str)
-        .map(str::to_string)
 }
 
 fn title_from_path(path: &Path) -> String {

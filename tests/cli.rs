@@ -143,6 +143,28 @@ fn check_reports_malformed_frontmatter_as_an_error_finding() {
 }
 
 #[test]
+fn check_reports_unclosed_frontmatter_without_panicking() {
+    let document = temp_file("customers.md", "---");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .arg(&document)
+        .output()
+        .expect("run rokf check");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        stdout.contains("OKF001"),
+        "stdout should include Frontmatter Rule Code: {stdout}"
+    );
+    assert!(
+        stdout.contains("closing --- delimiter"),
+        "stdout should describe the unclosed Frontmatter: {stdout}"
+    );
+}
+
+#[test]
 fn check_accepts_a_healthy_concept_document() {
     let document = temp_file(
         "customers.md",
