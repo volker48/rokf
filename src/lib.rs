@@ -1,3 +1,4 @@
+mod check;
 mod traversal;
 
 pub mod cli;
