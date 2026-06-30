@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::traversal;
 use crate::verification::{
-    RuleSet, Severity, VerificationOptions, VerificationReport, fix_document,
+    RuleSet, Severity, VerificationOptions, VerificationReport, filter_report, fix_document,
     verify_bundle_root_with_options, verify_concept_document,
 };
 
@@ -64,13 +64,13 @@ pub(crate) fn run(input: CheckInput) -> Result<CheckOutcome, CheckError> {
         .unwrap_or(Severity::Warning);
 
     if target.as_os_str() == "-" {
-        return check_stdin(failure_threshold, input.fix);
+        return check_stdin(failure_threshold, &config.options, input.fix);
     }
 
     let report = if target.is_dir() {
         check_bundle(&target, &config.options)?
     } else {
-        check_document(&target, input.fix)?
+        check_document(&target, &config.options, input.fix)?
     };
 
     Ok(CheckOutcome::Report {
@@ -90,7 +90,11 @@ fn resolve_target(target: Option<PathBuf>) -> Result<PathBuf, CheckError> {
     }
 }
 
-fn check_stdin(failure_threshold: Severity, fix: bool) -> Result<CheckOutcome, CheckError> {
+fn check_stdin(
+    failure_threshold: Severity,
+    options: &VerificationOptions,
+    fix: bool,
+) -> Result<CheckOutcome, CheckError> {
     let mut contents = String::new();
     std::io::stdin()
         .read_to_string(&mut contents)
@@ -103,7 +107,10 @@ fn check_stdin(failure_threshold: Severity, fix: bool) -> Result<CheckOutcome, C
     }
 
     Ok(CheckOutcome::Report {
-        report: verify_concept_document(Path::new("<stdin>"), &contents),
+        report: filter_report(
+            verify_concept_document(Path::new("<stdin>"), &contents),
+            options,
+        ),
         failure_threshold,
     })
 }
@@ -115,14 +122,24 @@ fn check_bundle(
     verify_bundle_root_with_options(target, options).map_err(|error| CheckError::io(target, error))
 }
 
-fn check_document(target: &Path, fix: bool) -> Result<VerificationReport, CheckError> {
+fn check_document(
+    target: &Path,
+    options: &VerificationOptions,
+    fix: bool,
+) -> Result<VerificationReport, CheckError> {
     let contents = read_target(target)?;
     if fix {
         std::fs::write(target, fix_document(&contents))
             .map_err(|error| CheckError::io(target, error))?;
-        return Ok(verify_concept_document(target, &read_target(target)?));
+        return Ok(filter_report(
+            verify_concept_document(target, &read_target(target)?),
+            options,
+        ));
     }
-    Ok(verify_concept_document(target, &contents))
+    Ok(filter_report(
+        verify_concept_document(target, &contents),
+        options,
+    ))
 }
 
 fn read_target(target: &Path) -> Result<String, CheckError> {
