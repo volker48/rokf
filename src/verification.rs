@@ -525,7 +525,10 @@ fn sort_inline_tags_line(line: &str) -> String {
     format!("tags: [{}]", tags.join(", "))
 }
 
-fn filter_report(report: VerificationReport, options: &VerificationOptions) -> VerificationReport {
+pub(crate) fn filter_report(
+    report: VerificationReport,
+    options: &VerificationOptions,
+) -> VerificationReport {
     VerificationReport {
         findings: report
             .findings

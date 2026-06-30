@@ -209,7 +209,7 @@ fn print_report(
 
 fn format_command(target: PathBuf, check: bool) -> ExitCode {
     if target.as_os_str() == "-" {
-        return format_stdin();
+        return format_stdin(check);
     }
     if target.is_dir() {
         return format_directory(&target, check);
@@ -274,13 +274,21 @@ fn format_document_path(target: &std::path::Path, check: bool) -> Result<bool, E
     Ok(false)
 }
 
-fn format_stdin() -> ExitCode {
+fn format_stdin(check: bool) -> ExitCode {
     let mut contents = String::new();
     if let Err(error) = std::io::stdin().read_to_string(&mut contents) {
         eprintln!("<stdin>: error: {error}");
         return ExitCode::from(2);
     }
-    print!("{}", format_document(&contents));
+    let formatted = format_document(&contents);
+    if check {
+        if contents == formatted {
+            return ExitCode::SUCCESS;
+        }
+        println!("<stdin>: would reformat");
+        return ExitCode::from(1);
+    }
+    print!("{formatted}");
     ExitCode::SUCCESS
 }
 

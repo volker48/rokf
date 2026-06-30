@@ -38,6 +38,15 @@ fn write_stdin(args: &[&str], input: &str) -> std::process::Output {
     child.wait_with_output().expect("wait for rokf")
 }
 
+fn parse_json_stdout(output: std::process::Output) -> serde_yaml::Mapping {
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    serde_yaml::from_str(&stdout).expect("stdout is parseable JSON")
+}
+
+fn yaml_key(key: &str) -> serde_yaml::Value {
+    serde_yaml::Value::String(key.to_string())
+}
+
 #[test]
 fn help_describes_rokf_command() {
     let output = Command::new(env!("CARGO_BIN_EXE_rokf"))
@@ -775,26 +784,102 @@ fn check_outputs_json_for_a_single_document() {
         .expect("run rokf check with JSON output");
 
     assert_eq!(output.status.code(), Some(1));
-    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
-    assert!(
-        stdout.starts_with('{') && stdout.ends_with("}\n"),
-        "JSON output should be a single object: {stdout}"
+    let report = parse_json_stdout(output);
+    assert_eq!(
+        report
+            .get(yaml_key("conformant"))
+            .and_then(|value| value.as_bool()),
+        Some(true)
     );
-    assert!(
-        stdout.contains("\"conformant\":true"),
-        "JSON output should include conformance: {stdout}"
+    assert_eq!(
+        report
+            .get(yaml_key("healthy"))
+            .and_then(|value| value.as_bool()),
+        Some(false)
     );
-    assert!(
-        stdout.contains("\"healthy\":false"),
-        "JSON output should include health: {stdout}"
+    assert_eq!(
+        report
+            .get(yaml_key("status"))
+            .and_then(|value| value.as_str()),
+        Some("fail")
     );
-    assert!(
-        stdout.contains("\"rule_code\":\"OKF101\""),
-        "JSON output should include stable Finding fields: {stdout}"
+
+    let findings = report
+        .get(yaml_key("findings"))
+        .and_then(|v| v.as_sequence())
+        .expect("JSON output includes Findings");
+    let finding = findings.first().expect("JSON output includes one Finding");
+    let finding = finding.as_mapping().expect("Finding is an object");
+    assert_eq!(
+        finding
+            .get(yaml_key("rule_code"))
+            .and_then(|value| value.as_str()),
+        Some("OKF101")
     );
-    assert!(
-        stdout.contains(&format!("\"document\":\"{}\"", document.display())),
-        "JSON output should include OKF Document identity: {stdout}"
+    assert_eq!(
+        finding
+            .get(yaml_key("severity"))
+            .and_then(|value| value.as_str()),
+        Some("warning")
+    );
+    let document_identity = document.display().to_string();
+    assert_eq!(
+        finding
+            .get(yaml_key("document"))
+            .and_then(|value| value.as_str()),
+        Some(document_identity.as_str())
+    );
+}
+
+#[test]
+fn check_outputs_json_for_stdin_and_bundle_documents() {
+    let stdin_output = write_stdin(
+        &["check", "--output", "json", "-"],
+        "---\ntype: Table\ndescription: Customers.\n---\n",
+    );
+
+    assert!(stdin_output.status.success());
+    let stdin_report = parse_json_stdout(stdin_output);
+    assert_eq!(
+        stdin_report
+            .get(yaml_key("status"))
+            .and_then(|value| value.as_str()),
+        Some("pass")
+    );
+
+    let bundle = temp_dir();
+    fs::write(bundle.join("index.md"), "# Bundle Index\n").expect("write Root Index File");
+    fs::write(
+        bundle.join("orders.md"),
+        "---\ntype: Table\ndescription: Orders.\n---\n\nSee [Customers](/customers.md).\n",
+    )
+    .expect("write concept with broken link");
+
+    let bundle_output = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .arg("--output")
+        .arg("json")
+        .arg("--failure-threshold")
+        .arg("error")
+        .arg(&bundle)
+        .output()
+        .expect("run bundle check with JSON output");
+
+    assert!(bundle_output.status.success());
+    let bundle_report = parse_json_stdout(bundle_output);
+    let findings = bundle_report
+        .get(yaml_key("findings"))
+        .and_then(|value| value.as_sequence())
+        .expect("Bundle JSON output includes Findings");
+    let finding = findings
+        .first()
+        .expect("Bundle JSON output includes a Finding");
+    let finding = finding.as_mapping().expect("Finding is an object");
+    assert_eq!(
+        finding
+            .get(yaml_key("rule_code"))
+            .and_then(|value| value.as_str()),
+        Some("OKF400")
     );
 }
 
@@ -894,6 +979,25 @@ fn format_normalizes_stdin_without_changing_body_text() {
 }
 
 #[test]
+fn format_check_reports_stdin_drift_without_printing_formatted_content() {
+    let output = write_stdin(
+        &["format", "--check", "-"],
+        "---\ntype: Table\ndescription: Customers.   \n---\n",
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        stdout.contains("<stdin>: would reformat"),
+        "stdin format check should report drift: {stdout}"
+    );
+    assert!(
+        !stdout.contains("description: Customers.\n"),
+        "format --check should not print formatted stdin content: {stdout}"
+    );
+}
+
+#[test]
 fn bundle_check_reports_broken_concept_links_as_warnings() {
     let bundle = temp_dir();
     fs::write(bundle.join("index.md"), "# Bundle Index\n").expect("write Root Index File");
@@ -926,6 +1030,48 @@ fn bundle_check_reports_broken_concept_links_as_warnings() {
     assert!(
         !stdout.contains("example.com"),
         "external links should not be treated as Broken Links: {stdout}"
+    );
+}
+
+#[test]
+fn bundle_check_resolves_relative_and_bundle_relative_concept_links() {
+    let bundle = temp_dir();
+    let catalog = bundle.join("catalog");
+    fs::create_dir_all(&catalog).expect("create nested catalog");
+    fs::write(bundle.join("index.md"), "# Bundle Index\n").expect("write Root Index File");
+    fs::write(
+        bundle.join("customers.md"),
+        "---\ntype: Table\ndescription: Customers.\n---\n",
+    )
+    .expect("write bundle-relative target");
+    fs::write(
+        catalog.join("inventory.md"),
+        "---\ntype: Table\ndescription: Inventory.\n---\n",
+    )
+    .expect("write relative target");
+    fs::write(
+        catalog.join("orders.md"),
+        concat!(
+            "---\n",
+            "type: Table\n",
+            "description: Orders.\n",
+            "---\n\n",
+            "See [Inventory](inventory.md) and [Customers](/customers.md).\n",
+        ),
+    )
+    .expect("write concept links");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .arg(&bundle)
+        .output()
+        .expect("run rokf check bundle");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        !stdout.contains("OKF400"),
+        "valid Concept Links should not be reported as Broken Links: {stdout}"
     );
 }
 
@@ -980,6 +1126,60 @@ fn configuration_applies_rule_set_suppressions_exclusions_and_threshold() {
     assert!(
         !stdout.contains("OKF101") && !stdout.contains("excluded.md"),
         "configuration should suppress and exclude configured content: {stdout}"
+    );
+}
+
+#[test]
+fn configuration_applies_to_single_document_checks() {
+    let dir = temp_dir();
+    let document = dir.join("concept.md");
+    fs::write(
+        dir.join("rokf.yml"),
+        "failure_threshold: warning\nsuppressions:\n  - OKF101\n",
+    )
+    .expect("write configuration");
+    fs::write(&document, "---\ntype: Concept\n---\n").expect("write Concept Document");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("check")
+        .arg(&document)
+        .output()
+        .expect("run configured document check");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        !stdout.contains("OKF101"),
+        "single-document Verification should apply configured Suppressions: {stdout}"
+    );
+}
+
+#[test]
+fn explicit_configuration_applies_to_stdin_checks() {
+    let config = temp_file(
+        "rokf.yml",
+        "failure_threshold: error\nrule_set: conformance\n",
+    );
+
+    let output = write_stdin(
+        &[
+            "check",
+            "--config",
+            config.to_str().expect("config path is UTF-8"),
+            "-",
+        ],
+        "---\ntitle: Untyped\n---\n",
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        stdout.contains("OKF002"),
+        "stdin Verification should keep configured Conformance Rule Findings: {stdout}"
+    );
+    assert!(
+        !stdout.contains("OKF101"),
+        "stdin Verification should apply configured Rule Sets: {stdout}"
     );
 }
 
@@ -1061,6 +1261,37 @@ fn template_creates_a_concept_document_without_inventing_domain_content() {
 }
 
 #[test]
+fn template_creates_reserved_file_templates() {
+    let dir = temp_dir();
+    let index = dir.join("index.md");
+    let log = dir.join("log.md");
+
+    let index_output = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("template")
+        .arg("index")
+        .arg(&index)
+        .output()
+        .expect("run rokf template index");
+    let log_output = Command::new(env!("CARGO_BIN_EXE_rokf"))
+        .arg("template")
+        .arg("log")
+        .arg(&log)
+        .output()
+        .expect("run rokf template log");
+
+    assert!(index_output.status.success());
+    assert!(log_output.status.success());
+    assert_eq!(
+        fs::read_to_string(index).expect("read Index File template"),
+        "# Index\n"
+    );
+    assert_eq!(
+        fs::read_to_string(log).expect("read Log File template"),
+        "# Directory Update Log\n"
+    );
+}
+
+#[test]
 fn template_refuses_to_overwrite_existing_documents() {
     let document = temp_file("customers.md", "existing\n");
 
@@ -1120,6 +1351,11 @@ fn index_fix_updates_index_files_with_concise_entries() {
         "---\ntype: Table\ntitle: Customers\ndescription: Customer records.\n---\n",
     )
     .expect("write concept document");
+    fs::write(
+        nested.join("invoices.md"),
+        "---\ntype: Table\ntitle: Invoices\n---\n",
+    )
+    .expect("write concept document without Description");
 
     let output = Command::new(env!("CARGO_BIN_EXE_rokf"))
         .arg("index")
@@ -1138,5 +1374,9 @@ fn index_fix_updates_index_files_with_concise_entries() {
     assert!(
         nested_index.contains("* [Customers](customers.md) - Customer records."),
         "nested Index File should use concise concept entries: {nested_index}"
+    );
+    assert!(
+        nested_index.contains("* [Invoices](invoices.md)"),
+        "nested Index File should handle concepts without Descriptions: {nested_index}"
     );
 }
